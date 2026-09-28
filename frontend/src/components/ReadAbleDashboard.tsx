@@ -145,13 +145,11 @@ export default function ReadAbleDashboard() {
   };
 
   const increaseSize = useCallback(() => {
-    setZoomIndex((prevIndex) => {
-      const nextIndex = (prevIndex + 1) % ZOOM_STEPS.length;
-      const pct = ZOOM_STEPS[nextIndex];
-      toast(pct === 100 ? "Dashboard text size reset" : "Dashboard text size increased to " + pct + "%");
-      return nextIndex;
-    });
-  }, [toast]);
+    const nextIndex = (zoomIndex + 1) % ZOOM_STEPS.length;
+    const pct = ZOOM_STEPS[nextIndex];
+    toast(pct === 100 ? "Dashboard text size reset" : "Dashboard text size increased to " + pct + "%");
+    setZoomIndex(nextIndex);
+  }, [zoomIndex, toast]);
 
   const toggleDropdown = (which: "notif" | "profile") => {
     if (which === "notif") {
@@ -231,7 +229,7 @@ export default function ReadAbleDashboard() {
       ref={containerRef}
       className="readable-root"
       data-theme={theme}
-      style={{ fontSize: (16 * zoomPct) / 100 + "px" }}
+      style={{ zoom: zoomPct / 100 }}
     >
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700&display=swap');
