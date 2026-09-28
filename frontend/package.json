@@ -2,7 +2,7 @@
   "name": "readable",
   "private": true,
   "version": "0.0.0",
-  "license": "IIITP",
+  "license": "PRIVATE",
   "type": "module",
   "scripts": {
     "dev": "vite",
