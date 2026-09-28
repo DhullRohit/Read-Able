@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
@@ -54,7 +54,12 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-const navLinks = ["Home", "Features", "How it works", "About"];
+const navLinks = [
+  { name: "Home", href: "/" },
+  { name: "Dashboard", href: "/dashboard" },
+  { name: "Features", href: "#" },
+  { name: "How it works", href: "#" },
+];
 
 const perks = [
   {
@@ -256,13 +261,13 @@ function Index() {
         {/* FIXED NAVIGATION MAP */}
         <nav className="hidden items-center gap-8 md:flex">
           {navLinks.map((link) => (
-            <a
-              key={link}
-              href="#"
+            <Link
+              key={link.name}
+              to={link.href}
               className="text-sm font-medium text-foreground/80 transition-colors hover:text-brand"
             >
-              {link}
-            </a>
+              {link.name}
+            </Link>
           ))}
         </nav>
 

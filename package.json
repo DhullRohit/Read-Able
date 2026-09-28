@@ -1,4 +1,6 @@
 {
+  "name": "read-able",
+  "license": "IIITP",
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "express": "^5.2.1"
