@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { authApi } from "@/lib/api";
 import {
   LayoutDashboard,
   BookOpen,
@@ -89,6 +91,9 @@ const ZOOM_STEPS = [100, 115, 130];
 // ---------------------------------------------------------------------------
 
 export default function ReadAbleDashboard() {
+  const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState<{ id: number; name: string; email?: string | null; phone?: string | null } | null>(null);
+
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -123,6 +128,32 @@ export default function ReadAbleDashboard() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastShow(false), 2200);
   }, []);
+
+  useEffect(() => {
+    const token = localStorage.getItem("readable_token");
+    if (!token) {
+      navigate({ to: "/", replace: true });
+      return;
+    }
+
+    authApi
+      .me()
+      .then((res) => {
+        if (res.data?.data) {
+          setCurrentUser(res.data.data);
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem("readable_token");
+        navigate({ to: "/", replace: true });
+      });
+  }, [navigate]);
+
+  const handleSignOut = () => {
+    localStorage.removeItem("readable_token");
+    setProfileOpen(false);
+    navigate({ to: "/", replace: true });
+  };
 
   const selectNav = (name: string) => {
     setActiveNav(name);
@@ -465,10 +496,10 @@ export default function ReadAbleDashboard() {
           </div>
 
           <div className="profile">
-            <div className="avatar">R</div>
+            <div className="avatar">{currentUser?.name ? currentUser.name[0].toUpperCase() : "U"}</div>
             <div>
-              <div className="name">Raghav Agarwal</div>
-              <div className="email">raghav@example.com</div>
+              <div className="name">{currentUser?.name || "User"}</div>
+              <div className="email">{currentUser?.email || currentUser?.phone || ""}</div>
             </div>
           </div>
         </aside>
@@ -530,7 +561,7 @@ export default function ReadAbleDashboard() {
                     toggleDropdown("profile");
                   }}
                 >
-                  R
+                  {currentUser?.name ? currentUser.name[0].toUpperCase() : "U"}
                 </div>
                 <div className={"dropdown" + (profileOpen ? " open" : "")} style={{ width: 180 }}>
                   <div className="item" onClick={() => toast("Opening profile")}>
@@ -539,7 +570,7 @@ export default function ReadAbleDashboard() {
                   <div className="item" onClick={() => toast("Opening settings")}>
                     Settings
                   </div>
-                  <div className="item" onClick={() => toast("Signed out")}>
+                  <div className="item" onClick={handleSignOut}>
                     Sign out
                   </div>
                 </div>
@@ -547,7 +578,7 @@ export default function ReadAbleDashboard() {
             </div>
           </div>
 
-          <h2 className="greet">Good morning, Raghav 👋</h2>
+          <h2 className="greet">Good morning, {currentUser?.name?.split(" ")[0] || "User"} 👋</h2>
           <p className="sub">Let's continue your reading journey.</p>
 
           {/* Reading settings */}

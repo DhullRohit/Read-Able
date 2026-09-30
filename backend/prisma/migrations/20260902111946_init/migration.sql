@@ -12,7 +12,8 @@ CREATE TABLE "User" (
 
 -- CreateTable
 CREATE TABLE "Document" (
-    "id" SERIAL NOT NULL,
+    "id" SERIAL Nnpx prisma generate
+npx prisma db pushOT NULL,
     "title" TEXT NOT NULL,
     "fileName" TEXT NOT NULL,
     "s3Key" TEXT NOT NULL,

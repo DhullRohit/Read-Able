@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Backend API for the Read-Able application",
   "main": "src/server.js",
+  "type": "module",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
@@ -12,11 +13,16 @@
   "license": "PRIVATE",
   "dependencies": {
     "@prisma/client": "^6.19.3",
-    "express": "^5.2.1"
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.4.1",
+    "nodemon": "^3.1.14",
     "prisma": "^6.19.3",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"

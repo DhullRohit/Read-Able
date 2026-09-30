@@ -22,6 +22,7 @@ import {
 
 import logo from "@/assets/readable-logo.png";
 import { ReadingPreferences } from "@/components/ReadingPreferences";
+import { authApi } from "@/lib/api";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -108,6 +109,7 @@ const steps = [
 ];
 
 function Index() {
+  const navigate = useNavigate();
   const [lowLight, setLowLight] = useState(false);
   const [scale, setScale] = useState(1);
   const [comfortable, setComfortable] = useState(false);
@@ -182,7 +184,7 @@ function Index() {
     resetForm();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     setFormError(null);
@@ -226,20 +228,43 @@ function Index() {
 
     setSubmitting(true);
 
-    // Frontend-only mock submission
-    window.setTimeout(() => {
-      setSubmitting(false);
-
-      setFormSuccess(
-        mode === "signin"
-          ? `Welcome back! You are signed in${
-              remember ? " and will stay signed in" : ""
-            }.`
-          : "Account created successfully. Welcome to ReadAble!",
+    try {
+      if (mode === "signup") {
+        const payload = {
+          name,
+          password,
+          ...(contact === "email"
+            ? { email: contactValue.trim() }
+            : { phone: contactValue.trim() }),
+        };
+        await authApi.register(payload);
+        // Do NOT log in automatically or store token
+        setMode("signin");
+        setName("");
+        setContactValue("");
+        setPassword("");
+        setFormSuccess("Account created successfully. Please sign in to continue.");
+      } else {
+        const payload = {
+          password,
+          ...(contact === "email"
+            ? { email: contactValue.trim() }
+            : { phone: contactValue.trim() }),
+        };
+        const res = await authApi.login(payload);
+        localStorage.setItem("readable_token", res.data.data.token);
+        setFormSuccess(
+          `Welcome back${remember ? " — staying signed in" : ""}! Redirecting…`
+        );
+        setTimeout(() => navigate({ to: "/dashboard", replace: true }), 800);
+      }
+    } catch (err: any) {
+      setFormError(
+        err?.response?.data?.message || "Something went wrong. Please try again."
       );
-
-      setPassword("");
-    }, 900);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
