@@ -11,9 +11,9 @@ if (process.env.JWT_SECRET.length < 32) {
 }
 
 export const config = {
-  port: Number(process.env.PORT) || 3001,
+  port: Number(process.env.PORT),
   jwtSecret: process.env.JWT_SECRET,
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
-  bcryptSaltRounds: Number(process.env.BCRYPT_SALT_ROUNDS) || 12,
-  nodeEnv: process.env.NODE_ENV || "development",
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN,
+  bcryptSaltRounds: Number(process.env.BCRYPT_SALT_ROUNDS),
+  nodeEnv: process.env.NODE_ENV,
 };
