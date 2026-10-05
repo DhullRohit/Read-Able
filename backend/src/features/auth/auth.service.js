@@ -65,12 +65,12 @@ export const loginUser = async ({ email, phone, password }) => {
   }
 
   if (!user) {
-    throw new UnauthorizedError("Invalid credentials.");
+    throw new UnauthorizedError("Invalid email/phone or password.");
   }
 
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
-    throw new UnauthorizedError("Invalid credentials.");
+    throw new UnauthorizedError("Invalid email/phone or password.");
   }
 
   const token = signToken(user.id);
@@ -85,5 +85,10 @@ export const getMe = async (userId) => {
     where: { id: userId },
     select: { id: true, name: true, email: true, phone: true, createdAt: true },
   });
+
+  if (!user) {
+    throw new UnauthorizedError("User no longer exists.");
+  }
+
   return user;
 };
