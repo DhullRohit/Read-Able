@@ -2,7 +2,7 @@
 import { registerUser, loginUser, getMe } from "./auth.service.js";
 import { validateRegister, validateLogin } from "./auth.validation.js";
 import { sendSuccess } from "../../shared/utils/response.js";
-import { ValidationError } from "../../shared/utils/errors.js";
+import { ValidationError, UnauthorizedError } from "../../shared/utils/errors.js";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 
 export const register = async (req, res, next) => {
@@ -34,6 +34,10 @@ export const me = [
   async (req, res, next) => {
     try {
       const user = await getMe(req.user.id);
+      // If the user was deleted after the token was issued, return Unauthorized
+      if (!user) {
+        return next(new UnauthorizedError("User no longer exists."));
+      }
       sendSuccess(res, user);
     } catch (err) {
       next(err);

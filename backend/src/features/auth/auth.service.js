@@ -1,22 +1,25 @@
-// Contains business logic for authentication operations like token generation, password hashing, and user verification
+// Contains business logic for authentication operations: token generation, password hashing, and user verification
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import prisma from "../../config/database.js";
 import { config } from "../../config/env.js";
 import { ConflictError, UnauthorizedError } from "../../shared/utils/errors.js";
 
-const SALT_ROUNDS = 10;
-
-const signToken = (user) =>
+// JWT payload contains only the user ID (minimum required information)
+const signToken = (userId) =>
   jwt.sign(
-    { id: user.id, email: user.email, phone: user.phone, name: user.name },
+    { id: userId },
     config.jwtSecret,
     { expiresIn: config.jwtExpiresIn }
   );
 
+// Normalize phone: strip all spaces, dashes, and parentheses for consistent storage/lookup
+const normalizePhone = (phone) =>
+  phone.replace(/[\s\-().]/g, "").trim();
+
 export const registerUser = async ({ name, email, phone, password }) => {
   const cleanEmail = email ? email.toLowerCase().trim() : null;
-  const cleanPhone = phone ? phone.trim() : null;
+  const cleanPhone = phone ? normalizePhone(phone) : null;
 
   if (cleanEmail) {
     const existingEmail = await prisma.user.findUnique({ where: { email: cleanEmail } });
@@ -28,11 +31,11 @@ export const registerUser = async ({ name, email, phone, password }) => {
   if (cleanPhone) {
     const existingPhone = await prisma.user.findUnique({ where: { phone: cleanPhone } });
     if (existingPhone) {
-      throw new ConflictError("An account with this mobile number already exists.");
+      throw new ConflictError("An account with this phone number already exists.");
     }
   }
 
-  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  const passwordHash = await bcrypt.hash(password, config.bcryptSaltRounds);
 
   const user = await prisma.user.create({
     data: {
@@ -43,6 +46,7 @@ export const registerUser = async ({ name, email, phone, password }) => {
     },
   });
 
+  // Do not return a token on registration — user must sign in separately
   return {
     user: { id: user.id, name: user.name, email: user.email, phone: user.phone },
   };
@@ -50,7 +54,7 @@ export const registerUser = async ({ name, email, phone, password }) => {
 
 export const loginUser = async ({ email, phone, password }) => {
   const cleanEmail = email ? email.toLowerCase().trim() : null;
-  const cleanPhone = phone ? phone.trim() : null;
+  const cleanPhone = phone ? normalizePhone(phone) : null;
 
   let user = null;
 
@@ -61,15 +65,15 @@ export const loginUser = async ({ email, phone, password }) => {
   }
 
   if (!user) {
-    throw new UnauthorizedError("Invalid email/phone or password.");
+    throw new UnauthorizedError("Invalid credentials.");
   }
 
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
-    throw new UnauthorizedError("Invalid email/phone or password.");
+    throw new UnauthorizedError("Invalid credentials.");
   }
 
-  const token = signToken(user);
+  const token = signToken(user.id);
   return {
     token,
     user: { id: user.id, name: user.name, email: user.email, phone: user.phone },

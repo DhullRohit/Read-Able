@@ -1,4 +1,4 @@
-// Defines validation functions for authentication request payloads (login, register)
+// Custom validation functions for authentication request payloads (register, login)
 
 export const validateRegister = (body) => {
   const { name, email, phone, password } = body;

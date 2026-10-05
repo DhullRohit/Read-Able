@@ -124,7 +124,6 @@ function Index() {
   const [name, setName] = useState("");
   const [contactValue, setContactValue] = useState("");
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(true);
 
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
@@ -238,10 +237,10 @@ function Index() {
             : { phone: contactValue.trim() }),
         };
         await authApi.register(payload);
-        // Do NOT log in automatically or store token
+        // Do NOT log in automatically. Switch to sign-in keeping the same contact mode.
         setMode("signin");
         setName("");
-        setContactValue("");
+        // Keep contactValue so the user sees their entered identifier pre-filled
         setPassword("");
         setFormSuccess("Account created successfully. Please sign in to continue.");
       } else {
@@ -253,9 +252,7 @@ function Index() {
         };
         const res = await authApi.login(payload);
         localStorage.setItem("readable_token", res.data.data.token);
-        setFormSuccess(
-          `Welcome back${remember ? " — staying signed in" : ""}! Redirecting…`
-        );
+        setFormSuccess("Welcome back! Redirecting…");
         setTimeout(() => navigate({ to: "/dashboard", replace: true }), 800);
       }
     } catch (err: any) {
@@ -517,8 +514,11 @@ function Index() {
                       key={value}
                       type="button"
                       onClick={() => {
-                        setContact(value);
-                        setFormError(null);
+                        if (contact !== value) {
+                          setContact(value);
+                          setContactValue("");
+                          setFormError(null);
+                        }
                       }}
                       aria-pressed={contact === value}
                       className={`flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
@@ -637,22 +637,9 @@ function Index() {
                 </div>
               </div>
 
-              {/* REMEMBER / FORGOT PASSWORD */}
+              {/* FORGOT PASSWORD */}
               {mode === "signin" && (
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={remember}
-                      onChange={(e) =>
-                        setRemember(e.target.checked)
-                      }
-                      className="size-4 accent-[var(--brand)]"
-                    />
-
-                    Keep me signed in
-                  </label>
-
+                <div className="flex justify-end">
                   <button
                     type="button"
                     onClick={() => {
