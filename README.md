@@ -3,5 +3,5 @@ ReadAble is an accessibility-focused web application designed to provide a perso
 
 ## License
 
-This project is licensed under the **IIITP License** - see the [LICENSE](LICENSE) file for details.
+This project is PRIVATE and only accessible to team members - see the [LICENSE](LICENSE) file for details.
 
