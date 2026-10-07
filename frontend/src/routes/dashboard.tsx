@@ -1,7 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import ReadAbleDashboard from "@/components/ReadAbleDashboard";
 
 export const Route = createFileRoute("/dashboard")({
+  beforeLoad: () => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("readable_token") : null;
+    if (!token) {
+      throw redirect({ to: "/" });
+    }
+  },
   head: () => ({
     meta: [
       { title: "Dashboard — ReadAble" },

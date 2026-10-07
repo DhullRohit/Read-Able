@@ -22,6 +22,7 @@ import {
 
 import logo from "@/assets/readable-logo.png";
 import { ReadingPreferences } from "@/components/ReadingPreferences";
+import { authApi } from "@/lib/api";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -108,6 +109,7 @@ const steps = [
 ];
 
 function Index() {
+  const navigate = useNavigate();
   const [lowLight, setLowLight] = useState(false);
   const [scale, setScale] = useState(1);
   const [comfortable, setComfortable] = useState(false);
@@ -122,7 +124,6 @@ function Index() {
   const [name, setName] = useState("");
   const [contactValue, setContactValue] = useState("");
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(true);
 
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
@@ -182,7 +183,7 @@ function Index() {
     resetForm();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     setFormError(null);
@@ -226,20 +227,41 @@ function Index() {
 
     setSubmitting(true);
 
-    // Frontend-only mock submission
-    window.setTimeout(() => {
-      setSubmitting(false);
-
-      setFormSuccess(
-        mode === "signin"
-          ? `Welcome back! You are signed in${
-              remember ? " and will stay signed in" : ""
-            }.`
-          : "Account created successfully. Welcome to ReadAble!",
+    try {
+      if (mode === "signup") {
+        const payload = {
+          name,
+          password,
+          ...(contact === "email"
+            ? { email: contactValue.trim() }
+            : { phone: contactValue.trim() }),
+        };
+        await authApi.register(payload);
+        // Do NOT log in automatically. Switch to sign-in keeping the same contact mode.
+        setMode("signin");
+        setName("");
+        // Keep contactValue so the user sees their entered identifier pre-filled
+        setPassword("");
+        setFormSuccess("Account created successfully. Please sign in to continue.");
+      } else {
+        const payload = {
+          password,
+          ...(contact === "email"
+            ? { email: contactValue.trim() }
+            : { phone: contactValue.trim() }),
+        };
+        const res = await authApi.login(payload);
+        localStorage.setItem("readable_token", res.data.data.token);
+        setFormSuccess("Welcome back! Redirecting…");
+        setTimeout(() => navigate({ to: "/dashboard", replace: true }), 800);
+      }
+    } catch (err: any) {
+      setFormError(
+        err?.response?.data?.message || "Something went wrong. Please try again."
       );
-
-      setPassword("");
-    }, 900);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -492,8 +514,11 @@ function Index() {
                       key={value}
                       type="button"
                       onClick={() => {
-                        setContact(value);
-                        setFormError(null);
+                        if (contact !== value) {
+                          setContact(value);
+                          setContactValue("");
+                          setFormError(null);
+                        }
                       }}
                       aria-pressed={contact === value}
                       className={`flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
@@ -612,22 +637,9 @@ function Index() {
                 </div>
               </div>
 
-              {/* REMEMBER / FORGOT PASSWORD */}
+              {/* FORGOT PASSWORD */}
               {mode === "signin" && (
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={remember}
-                      onChange={(e) =>
-                        setRemember(e.target.checked)
-                      }
-                      className="size-4 accent-[var(--brand)]"
-                    />
-
-                    Keep me signed in
-                  </label>
-
+                <div className="flex justify-end">
                   <button
                     type="button"
                     onClick={() => {
