@@ -46,15 +46,27 @@ export const registerUser = async ({ name, email, phone, password }) => {
     },
   });
 
-  // Do not return a token on registration — user must sign in separately
+  const token = signToken(user.id);
   return {
+    token,
     user: { id: user.id, name: user.name, email: user.email, phone: user.phone },
   };
 };
 
-export const loginUser = async ({ email, phone, password }) => {
-  const cleanEmail = email ? email.toLowerCase().trim() : null;
-  const cleanPhone = phone ? normalizePhone(phone) : null;
+export const loginUser = async ({ email, phone, identifier, password }) => {
+  let lookupEmail = email;
+  let lookupPhone = phone;
+
+  if (identifier && !lookupEmail && !lookupPhone) {
+    if (identifier.includes("@")) {
+      lookupEmail = identifier;
+    } else {
+      lookupPhone = identifier;
+    }
+  }
+
+  const cleanEmail = lookupEmail ? lookupEmail.toLowerCase().trim() : null;
+  const cleanPhone = lookupPhone ? normalizePhone(lookupPhone) : null;
 
   let user = null;
 
