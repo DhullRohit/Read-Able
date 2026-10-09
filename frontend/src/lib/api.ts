@@ -13,13 +13,28 @@ api.interceptors.request.use((config) => {
 });
 
 export const authApi = {
-  register: (data: { name: string; email?: string; phone?: string; password: string }) =>
+  register: (data: { name: string; email: string; phone: string; password: string }) =>
     api.post("/auth/register", data),
 
-  login: (data: { email?: string; phone?: string; password: string }) =>
+  login: (data: { identifier?: string; email?: string; phone?: string; password: string }) =>
     api.post("/auth/login", data),
 
-  me: () => api.get("/auth/me"),
+  me: async () => {
+    try {
+      return await api.get("/auth/me");
+    } catch (err) {
+      const token = localStorage.getItem("readable_token");
+      const savedUser = localStorage.getItem("readable_user");
+      if (token && savedUser) {
+        try {
+          return { data: { data: JSON.parse(savedUser) } };
+        } catch {
+          // fallback to rethrowing err
+        }
+      }
+      throw err;
+    }
+  },
 };
 
 export default api;
