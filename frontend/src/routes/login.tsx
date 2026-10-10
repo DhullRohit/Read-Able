@@ -429,7 +429,7 @@ function Login() {
                           value={phone}
                           onChange={(e) => setPhone(e.target.value)}
                           className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
-                          placeholder="+1 (555) 000-0000"
+                          placeholder="+91 000-000-0000"
                           autoComplete="tel"
                           required
                         />
@@ -452,7 +452,7 @@ function Login() {
                         value={loginIdentifier}
                         onChange={(e) => setLoginIdentifier(e.target.value)}
                         className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="alex@example.com or +1 (555) 000-0000"
+                        placeholder="alex@example.com or +91 000-000-0000"
                         autoComplete="username"
                         required
                       />
