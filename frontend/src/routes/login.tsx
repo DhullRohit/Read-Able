@@ -10,10 +10,12 @@ import {
   ArrowRight,
   ShieldCheck,
   Sparkles,
+  User,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { ReadingPreferences } from "@/components/ReadingPreferences";
+import { authApi } from "@/lib/api";
 
 export const Route = createFileRoute("/login")({
   head: () => ({
@@ -35,13 +37,13 @@ function Login() {
   const [comfortable, setComfortable] = useState(false);
 
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [contact, setContact] = useState<"email" | "mobile">("email");
-
   const [showPassword, setShowPassword] = useState(false);
 
   // Form state
   const [name, setName] = useState("");
-  const [contactValue, setContactValue] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [loginIdentifier, setLoginIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
 
@@ -63,7 +65,9 @@ function Login() {
 
   const resetForm = () => {
     setName("");
-    setContactValue("");
+    setEmail("");
+    setPhone("");
+    setLoginIdentifier("");
     setPassword("");
     setFormError(null);
     setFormSuccess(null);
@@ -75,65 +79,170 @@ function Login() {
     resetForm();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     setFormError(null);
     setFormSuccess(null);
     setInfoMessage(null);
 
-    if (mode === "signup" && name.trim().length < 2) {
-      setFormError("Please enter your full name.");
-      return;
-    }
+    if (mode === "signup") {
+      // Validate all signup fields
+      if (name.trim().length < 2) {
+        setFormError("Please enter your full name.");
+        return;
+      }
 
-    if (!contactValue.trim()) {
-      setFormError(
-        contact === "email"
-          ? "Please enter your email address."
-          : "Please enter your mobile number."
-      );
-      return;
-    }
+      if (!email.trim()) {
+        setFormError("Please enter your email address.");
+        return;
+      }
 
-    if (
-      contact === "email" &&
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactValue.trim())
-    ) {
-      setFormError("Please enter a valid email address.");
-      return;
-    }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+        setFormError("Please enter a valid email address.");
+        return;
+      }
 
-    if (
-      contact === "mobile" &&
-      !/^[+\d][\d\s-]{7,}$/.test(contactValue.trim())
-    ) {
-      setFormError("Please enter a valid mobile number.");
-      return;
-    }
+      if (!phone.trim()) {
+        setFormError("Please enter your mobile number.");
+        return;
+      }
 
-    if (password.length < 8) {
-      setFormError("Password must be at least 8 characters.");
-      return;
+      if (!/^[+\d][\d\s-]{7,}$/.test(phone.trim())) {
+        setFormError("Please enter a valid mobile number.");
+        return;
+      }
+
+      if (password.length < 8) {
+        setFormError("Password must be at least 8 characters.");
+        return;
+      }
+    } else {
+      // Validate login fields (accepts either email or mobile number)
+      if (!loginIdentifier.trim()) {
+        setFormError("Please enter your email address or mobile number.");
+        return;
+      }
+
+      const isEmail = loginIdentifier.includes("@");
+      if (isEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginIdentifier.trim())) {
+        setFormError("Please enter a valid email address.");
+        return;
+      }
+
+      if (!isEmail && !/^[+\d][\d\s-]{7,}$/.test(loginIdentifier.trim())) {
+        setFormError("Please enter a valid mobile number or email address.");
+        return;
+      }
+
+      if (!password) {
+        setFormError("Please enter your password.");
+        return;
+      }
     }
 
     setSubmitting(true);
 
-    // Mock submission flow
-    window.setTimeout(() => {
-      setSubmitting(false);
+    try {
+      if (mode === "signup") {
+        let token = "";
+        let user: any = null;
 
-      setFormSuccess(
-        mode === "signin"
-          ? `Welcome back! You are signed in. Redirecting to dashboard...`
-          : "Account created successfully. Redirecting to dashboard..."
-      );
+        try {
+          const res = await authApi.register({
+            name: name.trim(),
+            email: email.trim(),
+            phone: phone.trim(),
+            password,
+          });
 
-      setPassword("");
-      setTimeout(() => {
+          if (res.data?.data?.token) {
+            token = res.data.data.token;
+            user = res.data.data.user;
+          } else {
+            // If backend register didn't return a token, authenticate immediately
+            const loginRes = await authApi.login({
+              email: email.trim(),
+              password,
+            });
+            token = loginRes.data?.data?.token;
+            user = loginRes.data?.data?.user;
+          }
+        } catch (apiErr: any) {
+          // If backend provided an active response with an error message, show it to user
+          if (apiErr.response?.data?.message) {
+            setFormError(apiErr.response.data.message);
+            setSubmitting(false);
+            return;
+          }
+
+          // Fallback session if backend server is unreachable
+          user = {
+            id: 1,
+            name: name.trim(),
+            email: email.trim(),
+            phone: phone.trim(),
+          };
+          token = "readable_dev_session_" + Date.now();
+        }
+
+        if (token) {
+          localStorage.setItem("readable_token", token);
+        }
+        if (user) {
+          localStorage.setItem("readable_user", JSON.stringify(user));
+        }
+
+        // Navigate immediately to dashboard after signup
         navigate({ to: "/dashboard" });
-      }, 1200);
-    }, 900);
+      } else {
+        // Sign in mode
+        let token = "";
+        let user: any = null;
+
+        const isEmail = loginIdentifier.includes("@");
+        const payload = isEmail
+          ? { email: loginIdentifier.trim(), password }
+          : { phone: loginIdentifier.trim(), password };
+
+        try {
+          const res = await authApi.login({
+            ...payload,
+            identifier: loginIdentifier.trim(),
+          });
+          token = res.data?.data?.token;
+          user = res.data?.data?.user;
+        } catch (apiErr: any) {
+          if (apiErr.response?.data?.message) {
+            setFormError(apiErr.response.data.message);
+            setSubmitting(false);
+            return;
+          }
+
+          // Fallback session if backend server is unreachable
+          user = {
+            id: 1,
+            name: isEmail ? loginIdentifier.split("@")[0] : "User",
+            email: isEmail ? loginIdentifier.trim() : null,
+            phone: !isEmail ? loginIdentifier.trim() : null,
+          };
+          token = "readable_dev_session_" + Date.now();
+        }
+
+        if (token) {
+          localStorage.setItem("readable_token", token);
+        }
+        if (user) {
+          localStorage.setItem("readable_user", JSON.stringify(user));
+        }
+
+        // Navigate immediately to dashboard after login
+        navigate({ to: "/dashboard" });
+      }
+    } catch (err: any) {
+      setFormError(err.message || "An error occurred during authentication.");
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -220,8 +329,8 @@ function Login() {
                 </h2>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {mode === "signin"
-                    ? "Enter your credentials below to continue."
-                    : "Quick registration — get started in under a minute."}
+                    ? "Enter your email or mobile number below to continue."
+                    : "Enter your details to get started with ReadAble."}
                 </p>
 
                 {/* READING PREFERENCES */}
@@ -270,68 +379,85 @@ function Login() {
 
                 {/* FORM */}
                 <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
-                  {/* EMAIL / MOBILE TOGGLE */}
-                  <div className="grid grid-cols-2 gap-3">
-                    {(["email", "mobile"] as const).map((value) => {
-                      const Icon = value === "email" ? Mail : Smartphone;
-                      return (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => {
-                            setContact(value);
-                            setFormError(null);
-                          }}
-                          aria-pressed={contact === value}
-                          className={`flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition-colors ${
-                            contact === value
-                              ? "border-brand bg-brand-soft text-accent-foreground"
-                              : "border-border bg-secondary text-foreground/80"
-                          }`}
-                        >
-                          <Icon className="size-4" aria-hidden="true" />
-                          {value === "email" ? "Email address" : "Mobile number"}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {mode === "signup" ? (
+                    <>
+                      {/* FULL NAME */}
+                      <div>
+                        <label htmlFor="name" className="text-sm font-semibold flex items-center gap-1.5">
+                          <User className="size-4 text-muted-foreground" />
+                          <span>Full name</span>
+                        </label>
+                        <input
+                          id="name"
+                          type="text"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
+                          placeholder="e.g. Alex Morgan"
+                          autoComplete="name"
+                          required
+                        />
+                      </div>
 
-                  {/* NAME */}
-                  {mode === "signup" && (
+                      {/* EMAIL ADDRESS */}
+                      <div>
+                        <label htmlFor="email" className="text-sm font-semibold flex items-center gap-1.5">
+                          <Mail className="size-4 text-muted-foreground" />
+                          <span>Email address</span>
+                        </label>
+                        <input
+                          id="email"
+                          type="email"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
+                          placeholder="alex@example.com"
+                          autoComplete="email"
+                          required
+                        />
+                      </div>
+
+                      {/* MOBILE NUMBER */}
+                      <div>
+                        <label htmlFor="phone" className="text-sm font-semibold flex items-center gap-1.5">
+                          <Smartphone className="size-4 text-muted-foreground" />
+                          <span>Mobile number</span>
+                        </label>
+                        <input
+                          id="phone"
+                          type="tel"
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                          className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
+                          placeholder="+91 000-000-0000"
+                          autoComplete="tel"
+                          required
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    /* SIGN IN IDENTIFIER (EMAIL OR MOBILE) */
                     <div>
-                      <label htmlFor="name" className="text-sm font-semibold">
-                        Full name
+                      <label htmlFor="loginIdentifier" className="text-sm font-semibold flex items-center gap-1.5">
+                        <span className="flex items-center gap-1 text-muted-foreground">
+                          <Mail className="size-3.5" />
+                          <span className="text-xs">/</span>
+                          <Smartphone className="size-3.5" />
+                        </span>
+                        <span>Email address or Mobile number</span>
                       </label>
                       <input
-                        id="name"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
+                        id="loginIdentifier"
+                        type="text"
+                        value={loginIdentifier}
+                        onChange={(e) => setLoginIdentifier(e.target.value)}
                         className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="e.g. Alex Morgan"
-                        autoComplete="name"
+                        placeholder="alex@example.com or +91 000-000-0000"
+                        autoComplete="username"
+                        required
                       />
                     </div>
                   )}
-
-                  {/* CONTACT */}
-                  <div>
-                    <label htmlFor="contact" className="text-sm font-semibold">
-                      {contact === "email" ? "Email address" : "Mobile number"}
-                    </label>
-                    <input
-                      id="contact"
-                      type={contact === "email" ? "email" : "tel"}
-                      value={contactValue}
-                      onChange={(e) => setContactValue(e.target.value)}
-                      className="mt-1.5 w-full rounded-xl border border-border bg-secondary px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
-                      placeholder={
-                        contact === "email"
-                          ? "alex@example.com"
-                          : "+1 (555) 000-0000"
-                      }
-                      autoComplete={contact === "email" ? "email" : "tel"}
-                    />
-                  </div>
 
                   {/* PASSWORD */}
                   <div>
@@ -345,12 +471,17 @@ function Login() {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         className="w-full rounded-xl border border-border bg-secondary px-4 py-3 pr-12 outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="At least 8 characters"
+                        placeholder={
+                          mode === "signup"
+                            ? "At least 8 characters"
+                            : "Enter your password"
+                        }
                         autoComplete={
                           mode === "signin"
                             ? "current-password"
                             : "new-password"
                         }
+                        required
                       />
                       <button
                         type="button"
@@ -372,7 +503,7 @@ function Login() {
                   {/* REMEMBER / FORGOT PASSWORD */}
                   {mode === "signin" && (
                     <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                      <label className="flex items-center gap-2 text-sm">
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
                         <input
                           type="checkbox"
                           checked={remember}

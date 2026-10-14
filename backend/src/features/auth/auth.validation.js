@@ -8,15 +8,15 @@ export const validateRegister = (body) => {
     errors.push("Name must be at least 2 characters.");
   }
 
-  if (!email && !phone) {
-    errors.push("Either email address or mobile number is required.");
-  }
-
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+  if (!email || !email.trim()) {
+    errors.push("Email address is required.");
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
     errors.push("Please enter a valid email address.");
   }
 
-  if (phone && !/^[+\d][\d\s-]{7,}$/.test(phone.trim())) {
+  if (!phone || !phone.trim()) {
+    errors.push("Mobile number is required.");
+  } else if (!/^[+\d][\d\s-]{7,}$/.test(phone.trim())) {
     errors.push("Please enter a valid mobile number.");
   }
 
@@ -28,10 +28,10 @@ export const validateRegister = (body) => {
 };
 
 export const validateLogin = (body) => {
-  const { email, phone, password } = body;
+  const { email, phone, identifier, password } = body;
   const errors = [];
 
-  if (!email && !phone) {
+  if (!email && !phone && !identifier) {
     errors.push("Please enter your email address or mobile number.");
   }
 
