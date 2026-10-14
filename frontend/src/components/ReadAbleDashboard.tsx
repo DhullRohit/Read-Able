@@ -31,7 +31,6 @@ import {
   Menu,
   Bell,
   Maximize2,
-  Crown,
   Minus,
   Plus,
   Loader2,
