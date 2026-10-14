@@ -169,21 +169,15 @@ function Login() {
             user = loginRes.data?.data?.user;
           }
         } catch (apiErr: any) {
-          // If backend provided an active response with an error message, show it to user
           if (apiErr.response?.data?.message) {
             setFormError(apiErr.response.data.message);
-            setSubmitting(false);
-            return;
+          } else {
+            setFormError(
+              "Server is not running."
+            );
           }
-
-          // Fallback session if backend server is unreachable
-          user = {
-            id: 1,
-            name: name.trim(),
-            email: email.trim(),
-            phone: phone.trim(),
-          };
-          token = "readable_dev_session_" + Date.now();
+          setSubmitting(false);
+          return;
         }
 
         if (token) {
@@ -215,18 +209,13 @@ function Login() {
         } catch (apiErr: any) {
           if (apiErr.response?.data?.message) {
             setFormError(apiErr.response.data.message);
-            setSubmitting(false);
-            return;
+          } else {
+            setFormError(
+              "Server is not running."
+            );
           }
-
-          // Fallback session if backend server is unreachable
-          user = {
-            id: 1,
-            name: isEmail ? loginIdentifier.split("@")[0] : "User",
-            email: isEmail ? loginIdentifier.trim() : null,
-            phone: !isEmail ? loginIdentifier.trim() : null,
-          };
-          token = "readable_dev_session_" + Date.now();
+          setSubmitting(false);
+          return;
         }
 
         if (token) {
