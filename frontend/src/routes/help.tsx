@@ -55,7 +55,7 @@ const faqs: FAQItem[] = [
     category: "Getting Started",
     question: "Is ReadAble free to use?",
     answer:
-      "ReadAble offers a free tier that includes standard document uploading, reader view adjustments, text-to-speech, and basic AI explanations. Premium plans unlock unlimited AI summaries and advanced voice customization.",
+      "ReadAble includes standard document uploading, reader view adjustments, text-to-speech, and basic AI explanations.",
   },
   {
     id: "reading-1",
