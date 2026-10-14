@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { authApi } from "@/lib/api";
+import { authApi, documentApi, type DocumentItem } from "@/lib/api";
 import {
   LayoutDashboard,
   BookOpen,
@@ -34,6 +34,9 @@ import {
   Crown,
   Minus,
   Plus,
+  Loader2,
+  RefreshCw,
+  AlertCircle,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -51,40 +54,31 @@ const NAV_ITEMS = [
   { name: "Settings", icon: Settings },
 ];
 
-const DOCS = [
-  {
-    icon: File,
-    title: "The Psychology of Money.pdf",
-    sub: "PDF · 1.4 MB · Last read 2h ago",
-    pct: 75,
-  },
-  {
-    icon: FileText,
-    title: "Atomic Habits.txt",
-    sub: "TXT · 320 KB · Last read 1d ago",
-    pct: 40,
-  },
-  {
-    icon: File,
-    title: "Deep Work: Rules for Focus.pdf",
-    sub: "PDF · 2.1 MB · Last read 3d ago",
-    pct: 60,
-  },
-  {
-    icon: File,
-    title: "The 5 AM Club.pdf",
-    sub: "PDF · 1.8 MB · Last read 5d ago",
-    pct: 20,
-  },
-];
-
-const NOTIFICATIONS = [
-  { t: "New chapter recommendation", s: 'Based on "The Night Circus"' },
-  { t: "Streak reminder", s: "Read 18 more minutes to keep your streak" },
-  { t: "Upload complete", s: '"Deep Work" is ready to read' },
-];
+const NOTIFICATIONS: { t: string; s: string }[] = [];
 
 const ZOOM_STEPS = [100, 115, 130];
+
+function formatFileSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0 KB";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function formatTimeAgo(dateString: string): string {
+  if (!dateString) return "Recently";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffSec = Math.floor((now.getTime() - date.getTime()) / 1000);
+  if (isNaN(diffSec) || diffSec < 60) return "Just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -110,7 +104,7 @@ export default function ReadAbleDashboard() {
   const [playing, setPlaying] = useState(false);
 
   const [goalMinutes, setGoalMinutes] = useState(50);
-  const goalDone = 32;
+  const goalDone = 0;
 
   const [zoomIndex, setZoomIndex] = useState(0);
 
@@ -120,6 +114,13 @@ export default function ReadAbleDashboard() {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Document states
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [loadingDocs, setLoadingDocs] = useState<boolean>(true);
+  const [errorDocs, setErrorDocs] = useState<string | null>(null);
+  const [uploading, setUploading] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // -- helpers ---------------------------------------------------------
 
   const toast = useCallback((msg: string) => {
@@ -127,6 +128,19 @@ export default function ReadAbleDashboard() {
     setToastShow(true);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastShow(false), 2200);
+  }, []);
+
+  const loadDocuments = useCallback(async () => {
+    setLoadingDocs(true);
+    setErrorDocs(null);
+    try {
+      const res = await documentApi.getAll();
+      setDocuments(res.data?.data || []);
+    } catch {
+      setErrorDocs("Failed to load your documents. Please check backend connection and retry.");
+    } finally {
+      setLoadingDocs(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -141,24 +155,86 @@ export default function ReadAbleDashboard() {
       .then((res) => {
         if (res.data?.data) {
           setCurrentUser(res.data.data);
+          loadDocuments();
         }
       })
       .catch(() => {
         localStorage.removeItem("readable_token");
+        localStorage.removeItem("readable_user");
+        setCurrentUser(null);
+        setDocuments([]);
         navigate({ to: "/", replace: true });
       });
-  }, [navigate]);
+  }, [navigate, loadDocuments]);
 
   const handleSignOut = () => {
     localStorage.removeItem("readable_token");
+    localStorage.removeItem("readable_user");
+    setCurrentUser(null);
+    setDocuments([]);
+    setErrorDocs(null);
     setProfileOpen(false);
     navigate({ to: "/", replace: true });
+  };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploading(true);
+      await documentApi.create({
+        title: file.name.replace(/\.[^/.]+$/, ""),
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || "application/octet-stream",
+      });
+      toast("Document uploaded successfully");
+      await loadDocuments();
+    } catch {
+      toast("Failed to upload document");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleRenameDoc = async (doc: DocumentItem) => {
+    setOpenDocMenu(null);
+    const newTitle = window.prompt("Enter new document title:", doc.title);
+    if (!newTitle || newTitle.trim() === "" || newTitle.trim() === doc.title) return;
+    try {
+      await documentApi.update(doc.id, { title: newTitle.trim() });
+      toast("Document renamed");
+      await loadDocuments();
+    } catch {
+      toast("Failed to rename document");
+    }
+  };
+
+  const handleDeleteDoc = async (doc: DocumentItem) => {
+    setOpenDocMenu(null);
+    if (!window.confirm(`Are you sure you want to delete "${doc.title}"?`)) return;
+    try {
+      await documentApi.delete(doc.id);
+      toast("Document deleted");
+      await loadDocuments();
+    } catch {
+      toast("Failed to delete document");
+    }
   };
 
   const selectNav = (name: string) => {
     setActiveNav(name);
     setSidebarOpen(false);
-    toast(name === "Dashboard" ? "Dashboard" : name + " — build this screen next");
+    if (name === "Upload Document") {
+      handleUploadClick();
+    } else {
+      toast(name === "Dashboard" ? "Dashboard" : name + " — build this screen next");
+    }
   };
 
   const changeFont = (dir: number) => {
@@ -331,11 +407,6 @@ export default function ReadAbleDashboard() {
         .nav button svg{flex-shrink:0;}
         .nav button:hover{background:var(--card-soft);}
         .nav button.active{background:var(--accent-tint);color:var(--accent);font-weight:600;}
-        .premium{margin-top:auto;background:linear-gradient(135deg,var(--accent-tint),var(--card-soft));border-radius:var(--radius);padding:16px;font-size:0.8125rem;}
-        .premium p{margin:6px 0 12px;color:var(--text-2);line-height:1.5;}
-        .premium .title{font-weight:600;display:flex;align-items:center;gap:6px;color:var(--text-1);}
-        .premium button{width:100%;background:var(--accent);color:#fff;border:none;padding:10px;border-radius:10px;font-weight:500;cursor:pointer;font-size:0.8125rem;}
-        .premium button:hover{background:var(--accent-dark);}
         .profile{display:flex;align-items:center;gap:10px;padding:14px 8px 0;margin-top:16px;border-top:1px solid var(--border);position:relative;}
         .avatar{width:34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:0.8125rem;flex-shrink:0;}
         .profile .name{font-size:0.8125rem;font-weight:500;}
@@ -487,14 +558,6 @@ export default function ReadAbleDashboard() {
             ))}
           </nav>
 
-          <div className="premium">
-            <div className="title">
-              <Crown size={16} /> Go Premium
-            </div>
-            <p>Unlock unlimited uploads, premium voices and advanced features.</p>
-            <button onClick={() => toast("Upgrade flow goes here")}>Upgrade now</button>
-          </div>
-
           <div className="profile">
             <div className="avatar">{currentUser?.name ? currentUser.name[0].toUpperCase() : "U"}</div>
             <div>
@@ -538,17 +601,24 @@ export default function ReadAbleDashboard() {
                     e.stopPropagation();
                     toggleDropdown("notif");
                   }}
+                  title="Notifications"
                 >
                   <Bell size={18} />
-                  <span className="badge">3</span>
+                  {NOTIFICATIONS.length > 0 && <span className="badge">{NOTIFICATIONS.length}</span>}
                 </button>
                 <div className={"dropdown" + (notifOpen ? " open" : "")}>
-                  {NOTIFICATIONS.map((n, i) => (
-                    <div className="item" key={i}>
-                      <div className="t">{n.t}</div>
-                      <div className="s">{n.s}</div>
+                  {NOTIFICATIONS.length === 0 ? (
+                    <div style={{ padding: "14px 12px", textAlign: "center", color: "var(--text-3)", fontSize: "0.8125rem" }}>
+                      No new notifications
                     </div>
-                  ))}
+                  ) : (
+                    NOTIFICATIONS.map((n, i) => (
+                      <div className="item" key={i}>
+                        <div className="t">{n.t}</div>
+                        <div className="s">{n.s}</div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -647,29 +717,31 @@ export default function ReadAbleDashboard() {
           </div>
 
           {/* Continue reading */}
-          <div className="card continue-card" style={{ marginBottom: 18 }}>
-            <div className="cover">
-              <BookOpen size={20} />
-            </div>
-            <div className="continue-info">
-              <p className="book-title">The Night Circus</p>
-              <p className="book-sub">Chapter 6 of 21</p>
-              <div className="progress-row">
-                <div className="progress-track">
-                  <div className="progress-fill" style={{ width: "28%" }} />
-                </div>
-                <span className="progress-pct">28%</span>
+          {documents.length > 0 && (
+            <div className="card continue-card" style={{ marginBottom: 18 }}>
+              <div className="cover">
+                <BookOpen size={20} />
               </div>
+              <div className="continue-info">
+                <p className="book-title">{documents[0].title}</p>
+                <p className="book-sub">{documents[0].fileName}</p>
+                <div className="progress-row">
+                  <div className="progress-track">
+                    <div className="progress-fill" style={{ width: "0%" }} />
+                  </div>
+                  <span className="progress-pct">0%</span>
+                </div>
+              </div>
+              <button className="resume-btn" onClick={() => toast("Opening " + documents[0].title)}>
+                <Play size={14} />
+                Read
+              </button>
             </div>
-            <button className="resume-btn" onClick={() => toast("Opening reader view")}>
-              <Play size={14} />
-              Resume
-            </button>
-          </div>
+          )}
 
           {/* Quick actions */}
           <div className="actions-grid">
-            <div className="action-tile" onClick={() => toast("Opening upload dialog")}>
+            <div className="action-tile" onClick={handleUploadClick}>
               <div className="a-icon">
                 <Upload size={18} />
               </div>
@@ -695,76 +767,232 @@ export default function ReadAbleDashboard() {
                 <Bookmark size={18} />
               </div>
               <p className="a-title">Bookmarks</p>
-              <p className="a-sub">4 saved spots</p>
+              <p className="a-sub">0 saved spots</p>
             </div>
           </div>
 
           {/* Recent documents */}
           <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div className="card-title" style={{ margin: 0 }}>
                 <FileText size={17} />
                 Recent documents
               </div>
-              <a
-                href="#"
-                style={{ color: "var(--accent)", fontSize: 13, fontWeight: 500 }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  selectNav("My Library");
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <button
+                  type="button"
+                  onClick={handleUploadClick}
+                  disabled={uploading}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "none",
+                    border: "none",
+                    color: "var(--accent)",
+                    fontSize: 13,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                  }}
+                >
+                  <Upload size={14} />
+                  <span>{uploading ? "Uploading…" : "Upload"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => loadDocuments()}
+                  title="Refresh documents"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-3)",
+                    cursor: "pointer",
+                    padding: 2,
+                  }}
+                >
+                  <RefreshCw size={14} className={loadingDocs ? "animate-spin" : ""} />
+                </button>
+              </div>
+            </div>
+
+            {/* Loading State */}
+            {loadingDocs && (
+              <div style={{ padding: "36px 0", textAlign: "center", color: "var(--text-3)" }}>
+                <Loader2 className="animate-spin" size={24} style={{ margin: "0 auto 8px" }} />
+                <p style={{ fontSize: "0.875rem", margin: 0 }}>Loading your documents…</p>
+              </div>
+            )}
+
+            {/* Error State */}
+            {!loadingDocs && errorDocs && (
+              <div
+                style={{
+                  padding: "20px 16px",
+                  textAlign: "center",
+                  background: "var(--card-soft)",
+                  borderRadius: "10px",
+                  margin: "12px 0",
                 }}
               >
-                View all
-              </a>
-            </div>
-            <div className="doc-list">
-              {DOCS.map((d, i) => {
-                const Icon = d.icon;
-                return (
-                  <div className="doc-row" key={i}>
-                    <div className="doc-icon">
-                      <Icon size={16} />
-                    </div>
-                    <div className="doc-info">
-                      <p className="d-title">{d.title}</p>
-                      <p className="d-sub">{d.sub}</p>
-                    </div>
-                    <div className="doc-progress">
-                      <div className="doc-progress-fill" style={{ width: d.pct + "%" }} />
-                    </div>
-                    <div className="doc-pct">{d.pct}%</div>
-                    <div className="doc-more">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleDocMenu(i);
-                        }}
-                      >
-                        <MoreVertical size={16} />
-                      </button>
-                      <div className={"doc-menu" + (openDocMenu === i ? " open" : "")}>
-                        <div className="item" onClick={() => toast("Opening " + d.title)}>
-                          <Book size={14} />
-                          Open
-                        </div>
-                        <div className="item" onClick={() => toast("Renaming")}>
-                          <Pencil size={14} />
-                          Rename
-                        </div>
-                        <div className="item" onClick={() => toast("Downloaded")}>
-                          <Download size={14} />
-                          Download
-                        </div>
-                        <div className="item" onClick={() => toast("Deleted")} style={{ color: "#d64545" }}>
-                          <Trash2 size={14} />
-                          Delete
+                <div
+                  style={{
+                    color: "#d64545",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    marginBottom: 10,
+                    fontSize: "0.875rem",
+                  }}
+                >
+                  <AlertCircle size={16} />
+                  <span>{errorDocs}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => loadDocuments()}
+                  style={{
+                    background: "var(--accent)",
+                    color: "#fff",
+                    border: "none",
+                    padding: "7px 16px",
+                    borderRadius: "8px",
+                    fontSize: "0.8125rem",
+                    cursor: "pointer",
+                    fontWeight: 500,
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* Empty State */}
+            {!loadingDocs && !errorDocs && documents.length === 0 && (
+              <div
+                style={{
+                  padding: "36px 20px",
+                  textAlign: "center",
+                  background: "var(--card-soft)",
+                  borderRadius: "12px",
+                  margin: "8px 0",
+                }}
+              >
+                <div
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: "12px",
+                    background: "var(--accent-tint)",
+                    color: "var(--accent)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    margin: "0 auto 12px",
+                  }}
+                >
+                  <Upload size={22} />
+                </div>
+                <p style={{ fontWeight: 600, fontSize: "0.9375rem", margin: "0 0 4px" }}>No documents yet</p>
+                <p style={{ color: "var(--text-3)", fontSize: "0.8125rem", margin: "0 0 16px" }}>
+                  Upload your first document to start reading with personalized AI assistance.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleUploadClick}
+                  disabled={uploading}
+                  style={{
+                    background: "var(--accent)",
+                    color: "#fff",
+                    border: "none",
+                    padding: "9px 18px",
+                    borderRadius: "9px",
+                    fontSize: "0.8125rem",
+                    cursor: "pointer",
+                    fontWeight: 500,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <Upload size={14} />
+                  <span>{uploading ? "Uploading…" : "Upload Document"}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Populated Documents List */}
+            {!loadingDocs && !errorDocs && documents.length > 0 && (
+              <div className="doc-list">
+                {documents.map((d, i) => {
+                  const isPdf = d.mimeType?.includes("pdf") || d.fileName?.endsWith(".pdf");
+                  const DocIcon = isPdf ? File : FileText;
+                  const sub = `${isPdf ? "PDF" : "DOC"} · ${formatFileSize(d.fileSize)} · Added ${formatTimeAgo(d.createdAt)}`;
+                  return (
+                    <div className="doc-row" key={d.id}>
+                      <div className="doc-icon">
+                        <DocIcon size={16} />
+                      </div>
+                      <div className="doc-info">
+                        <p className="d-title">{d.title}</p>
+                        <p className="d-sub">{sub}</p>
+                      </div>
+                      <div className="doc-progress">
+                        <div className="doc-progress-fill" style={{ width: "0%" }} />
+                      </div>
+                      <div className="doc-pct">0%</div>
+                      <div className="doc-more">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleDocMenu(i);
+                          }}
+                        >
+                          <MoreVertical size={16} />
+                        </button>
+                        <div className={"doc-menu" + (openDocMenu === i ? " open" : "")}>
+                          <div
+                            className="item"
+                            onClick={() => {
+                              setOpenDocMenu(null);
+                              toast("Opening " + d.title);
+                            }}
+                          >
+                            <Book size={14} />
+                            Open
+                          </div>
+                          <div className="item" onClick={() => handleRenameDoc(d)}>
+                            <Pencil size={14} />
+                            Rename
+                          </div>
+                          <div
+                            className="item"
+                            onClick={() => {
+                              setOpenDocMenu(null);
+                              toast("Downloaded " + d.fileName);
+                            }}
+                          >
+                            <Download size={14} />
+                            Download
+                          </div>
+                          <div
+                            className="item"
+                            onClick={() => handleDeleteDoc(d)}
+                            style={{ color: "#d64545" }}
+                          >
+                            <Trash2 size={14} />
+                            Delete
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </main>
 
@@ -775,15 +1003,16 @@ export default function ReadAbleDashboard() {
               <Flame size={17} />
               Reading streak
             </div>
-            <div className="streak-num">7</div>
-            <div style={{ color: "var(--text-3)", fontSize: 12 }}>days — keep it up!</div>
+            <div className="streak-num">0</div>
+            <div style={{ color: "var(--text-3)", fontSize: 12 }}>days — start reading to build a streak!</div>
             <div className="streak-days">
               <span>M</span>
               <span>T</span>
               <span>W</span>
               <span>T</span>
               <span>F</span>
-              <span className="today">S</span>
+              <span>S</span>
+              <span>S</span>
             </div>
           </div>
 
@@ -822,23 +1051,31 @@ export default function ReadAbleDashboard() {
               <BookOpen size={16} />
             </div>
             <div className="mini-info">
-              <p className="t">The Night Circus</p>
-              <p className="s">Chapter 6</p>
+              <p className="t">{documents.length > 0 ? documents[0].title : "No document selected"}</p>
+              <p className="s">{documents.length > 0 ? "Ready to read" : "—"}</p>
             </div>
             <div className="mini-controls">
-              <button>
+              <button onClick={() => toast("Previous")}>
                 <SkipBack size={16} />
               </button>
               <button className="play" onClick={togglePlay}>
                 {playing ? <Pause size={16} /> : <Play size={16} />}
               </button>
-              <button>
+              <button onClick={() => toast("Next")}>
                 <SkipForward size={16} />
               </button>
             </div>
           </div>
         </aside>
       </div>
+
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileSelected}
+        accept=".pdf,.txt,.doc,.docx,image/*"
+        style={{ display: "none" }}
+      />
 
       <div className={"toast" + (toastShow ? " show" : "")}>{toastMsg}</div>
     </div>
