@@ -180,26 +180,86 @@ export default function ReadAbleDashboard() {
     fileInputRef.current?.click();
   };
 
-  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      setUploading(true);
-      await documentApi.create({
-        title: file.name.replace(/\.[^/.]+$/, ""),
-        fileName: file.name,
-        fileSize: file.size,
-        mimeType: file.type || "application/octet-stream",
-      });
-      toast("Document uploaded successfully");
-      await loadDocuments();
-    } catch {
-      toast("Failed to upload document");
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+const handleFileSelected = async (
+  e: React.ChangeEvent<HTMLInputElement>
+) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  try {
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      toast("Only PDF files are supported right now");
+      return;
     }
-  };
+
+    setUploading(true);
+
+    await documentApi.upload(
+      file,
+      file.name.replace(/\.[^/.]+$/, "")
+    );
+
+    toast("Document uploaded successfully");
+    await loadDocuments();
+  } catch {
+    toast("Failed to upload document");
+  } finally {
+    setUploading(false);
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+};
+
+const handleOpenDocument = async (doc: DocumentItem) => {
+  // Open a tab immediately to avoid browser popup blocking.
+  const newTab = window.open("about:blank", "_blank");
+
+  if (!newTab) {
+    toast("Please allow pop-ups to open PDFs");
+    return;
+  }
+
+  try {
+    const response = await documentApi.getStream(doc.id);
+    const pdfBlob = new Blob([response.data], {
+      type: "application/pdf",
+    });
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+
+    newTab.location.href = pdfUrl;
+
+    // Release the temporary browser URL later.
+    window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 60_000);
+  } catch {
+    newTab.close();
+    toast("Could not open PDF. Check that the file exists on the server.");
+  }
+};
+
+const handleDownloadDocument = async (doc: DocumentItem) => {
+  try {
+    const response = await documentApi.getStream(doc.id);
+    const pdfBlob = new Blob([response.data], {
+      type: "application/pdf",
+    });
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    const link = document.createElement("a");
+
+    link.href = pdfUrl;
+    link.download = doc.fileName || `${doc.title}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 1_000);
+    toast("Download started");
+  } catch {
+    toast("Could not download PDF. Check that the file exists on the server.");
+  }
+};
+
 
   const handleRenameDoc = async (doc: DocumentItem) => {
     setOpenDocMenu(null);
@@ -731,10 +791,12 @@ export default function ReadAbleDashboard() {
                   <span className="progress-pct">0%</span>
                 </div>
               </div>
-              <button className="resume-btn" onClick={() => toast("Opening " + documents[0].title)}>
-                <Play size={14} />
-                Read
-              </button>
+              
+<button className="resume-btn" onClick={() => void handleOpenDocument(documents[0])}>
+  <Play size={14} />
+  Read
+</button>
+
             </div>
           )}
 
@@ -957,7 +1019,8 @@ export default function ReadAbleDashboard() {
                             className="item"
                             onClick={() => {
                               setOpenDocMenu(null);
-                              toast("Opening " + d.title);
+                              // toast("Opening " + d.title);
+                              void handleOpenDocument(d);
                             }}
                           >
                             <Book size={14} />
@@ -971,7 +1034,8 @@ export default function ReadAbleDashboard() {
                             className="item"
                             onClick={() => {
                               setOpenDocMenu(null);
-                              toast("Downloaded " + d.fileName);
+                              // toast("Downloaded " + d.fileName);
+                              void handleDownloadDocument(d);
                             }}
                           >
                             <Download size={14} />

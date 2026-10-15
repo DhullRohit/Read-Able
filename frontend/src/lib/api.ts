@@ -1,3 +1,4 @@
+
 // Centralized API client for all backend calls
 import axios from "axios";
 
@@ -13,11 +14,19 @@ api.interceptors.request.use((config) => {
 });
 
 export const authApi = {
-  register: (data: { name: string; email: string; phone: string; password: string }) =>
-    api.post("/auth/register", data),
+  register: (data: {
+    name: string;
+    email: string;
+    phone: string;
+    password: string;
+  }) => api.post("/auth/register", data),
 
-  login: (data: { identifier?: string; email?: string; phone?: string; password: string }) =>
-    api.post("/auth/login", data),
+  login: (data: {
+    identifier?: string;
+    email?: string;
+    phone?: string;
+    password: string;
+  }) => api.post("/auth/login", data),
 
   me: () => api.get("/auth/me"),
 };
@@ -35,13 +44,51 @@ export interface DocumentItem {
 }
 
 export const documentApi = {
-  getAll: () => api.get<{ success: boolean; data: DocumentItem[] }>("/documents"),
-  getById: (id: number) => api.get<{ success: boolean; data: DocumentItem }>(`/documents/${id}`),
-  create: (data: { title: string; fileName?: string; fileSize?: number; mimeType?: string; s3Key?: string }) =>
+  getAll: () =>
+    api.get<{ success: boolean; data: DocumentItem[] }>("/documents"),
+
+  getById: (id: number) =>
+    api.get<{ success: boolean; data: DocumentItem }>(`/documents/${id}`),
+
+  // Existing JSON metadata creation; preserved for compatibility
+  create: (data: {
+    title: string;
+    fileName?: string;
+    fileSize?: number;
+    mimeType?: string;
+    s3Key?: string;
+  }) =>
     api.post<{ success: boolean; data: DocumentItem }>("/documents", data),
+
+  // Upload the actual file using multipart/form-data
+  upload: (file: File, title?: string) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    if (title?.trim()) {
+      formData.append("title", title.trim());
+    }
+
+    return api.post<{ success: boolean; data: DocumentItem }>(
+      "/documents",
+      formData
+    );
+  },
+  getStream: (id: number) =>
+  api.get<Blob>(`/documents/${id}/stream`, {
+    responseType: "blob",
+  }),
+
   update: (id: number, data: { title?: string; fileName?: string }) =>
-    api.put<{ success: boolean; data: DocumentItem }>(`/documents/${id}`, data),
-  delete: (id: number) => api.delete<{ success: boolean; data: { id: number } }>(`/documents/${id}`),
+    api.put<{ success: boolean; data: DocumentItem }>(
+      `/documents/${id}`,
+      data
+    ),
+
+  delete: (id: number) =>
+    api.delete<{ success: boolean; data: { id: number } }>(
+      `/documents/${id}`
+    ),
 };
 
 export default api;
