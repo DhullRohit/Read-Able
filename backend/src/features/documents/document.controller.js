@@ -1,6 +1,7 @@
 // Handles HTTP requests and responses for document management endpoints (upload, retrieve, delete)
 import * as documentService from "./document.service.js";
 import { sendSuccess } from "../../shared/utils/response.js";
+import { safelyDeleteFile } from "../../shared/middleware/upload.middleware.js";
 
 export const getDocuments = async (req, res, next) => {
   try {
@@ -23,9 +24,27 @@ export const getDocument = async (req, res, next) => {
 
 export const createDocument = async (req, res, next) => {
   try {
+    // If multipart file upload
+    if (req.file) {
+      const uploadPreview = {
+        message: "File uploaded and validated successfully (Phase 1 preview)",
+        file: {
+          originalName: req.file.originalname,
+          size: req.file.size,
+          mimeType: req.file.mimetype,
+          tempKey: req.file.filename,
+        },
+      };
+      return sendSuccess(res, uploadPreview, "File uploaded successfully", 200);
+    }
+
+    // Preserve existing JSON metadata behavior
     const document = await documentService.createDocument(req.user.id, req.body);
     sendSuccess(res, document, "Document created successfully", 201);
   } catch (err) {
+    if (req.file?.path) {
+      await safelyDeleteFile(req.file.path);
+    }
     next(err);
   }
 };

@@ -8,6 +8,7 @@ import {
   updateDocument,
   deleteDocument,
 } from "./document.controller.js";
+import { uploadDocumentMiddleware } from "../../shared/middleware/upload.middleware.js";
 
 const router = Router();
 
@@ -15,7 +16,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get("/", getDocuments);
-router.post("/", createDocument);
+router.post("/", uploadDocumentMiddleware, createDocument);
 router.get("/:id", getDocument);
 router.put("/:id", updateDocument);
 router.delete("/:id", deleteDocument);
