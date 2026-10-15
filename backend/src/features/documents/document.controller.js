@@ -26,16 +26,12 @@ export const createDocument = async (req, res, next) => {
   try {
     // If multipart file upload
     if (req.file) {
-      const uploadPreview = {
-        message: "File uploaded and validated successfully (Phase 1 preview)",
-        file: {
-          originalName: req.file.originalname,
-          size: req.file.size,
-          mimeType: req.file.mimetype,
-          tempKey: req.file.filename,
-        },
-      };
-      return sendSuccess(res, uploadPreview, "File uploaded successfully", 200);
+      const document = await documentService.createDocumentFromFile({
+        userId: req.user.id,
+        file: req.file,
+        title: req.body?.title,
+      });
+      return sendSuccess(res, document, "Document uploaded successfully", 201);
     }
 
     // Preserve existing JSON metadata behavior
