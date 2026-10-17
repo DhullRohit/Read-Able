@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { authApi, documentApi, type DocumentItem } from "@/lib/api";
+import { authApi, documentApi, readingApi, type DocumentItem } from "@/lib/api";
 import {
   LayoutDashboard,
   BookOpen,
@@ -115,6 +115,7 @@ export default function ReadAbleDashboard() {
 
   // Document states
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [docProgress, setDocProgress] = useState<Record<string, { percentage: number; currentPage: number }>>({});
   const [loadingDocs, setLoadingDocs] = useState<boolean>(true);
   const [errorDocs, setErrorDocs] = useState<string | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
@@ -133,8 +134,14 @@ export default function ReadAbleDashboard() {
     setLoadingDocs(true);
     setErrorDocs(null);
     try {
-      const res = await documentApi.getAll();
+      const [res, progRes] = await Promise.all([
+        documentApi.getAll(),
+        readingApi.getAllProgress().catch(() => null),
+      ]);
       setDocuments(res.data?.data || []);
+      if (progRes?.data?.data) {
+        setDocProgress(progRes.data.data);
+      }
     } catch {
       setErrorDocs("Failed to load your documents. Please check backend connection and retry.");
     } finally {
@@ -212,31 +219,12 @@ const handleFileSelected = async (
   }
 };
 
-const handleOpenDocument = async (doc: DocumentItem) => {
-  // Open a tab immediately to avoid browser popup blocking.
-  const newTab = window.open("about:blank", "_blank");
-
-  if (!newTab) {
-    toast("Please allow pop-ups to open PDFs");
-    return;
-  }
-
-  try {
-    const response = await documentApi.getStream(doc.id);
-    const pdfBlob = new Blob([response.data], {
-      type: "application/pdf",
+  const handleOpenDocument = (doc: DocumentItem) => {
+    navigate({
+      to: "/documents/$id/read",
+      params: { id: String(doc.id) },
     });
-    const pdfUrl = URL.createObjectURL(pdfBlob);
-
-    newTab.location.href = pdfUrl;
-
-    // Release the temporary browser URL later.
-    window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 60_000);
-  } catch {
-    newTab.close();
-    toast("Could not open PDF. Check that the file exists on the server.");
-  }
-};
+  };
 
 const handleDownloadDocument = async (doc: DocumentItem) => {
   try {
@@ -786,16 +774,23 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
                 <p className="book-sub">{documents[0].fileName}</p>
                 <div className="progress-row">
                   <div className="progress-track">
-                    <div className="progress-fill" style={{ width: "0%" }} />
+                    <div
+                      className="progress-fill"
+                      style={{
+                        width: `${docProgress[String(documents[0].id)]?.percentage || 0}%`,
+                      }}
+                    />
                   </div>
-                  <span className="progress-pct">0%</span>
+                  <span className="progress-pct">
+                    {docProgress[String(documents[0].id)]?.percentage || 0}%
+                  </span>
                 </div>
               </div>
-              
-<button className="resume-btn" onClick={() => void handleOpenDocument(documents[0])}>
-  <Play size={14} />
-  Read
-</button>
+
+              <button className="resume-btn" onClick={() => handleOpenDocument(documents[0])}>
+                <Play size={14} />
+                {docProgress[String(documents[0].id)]?.percentage ? "Resume" : "Read"}
+              </button>
 
             </div>
           )}
@@ -991,19 +986,30 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
                   const isPdf = d.mimeType?.includes("pdf") || d.fileName?.endsWith(".pdf");
                   const DocIcon = isPdf ? File : FileText;
                   const sub = `${isPdf ? "PDF" : "DOC"} · ${formatFileSize(d.fileSize)} · Added ${formatTimeAgo(d.createdAt)}`;
+                  const docPct = docProgress[String(d.id)]?.percentage || 0;
                   return (
                     <div className="doc-row" key={d.id}>
-                      <div className="doc-icon">
+                      <div
+                        className="doc-icon"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => handleOpenDocument(d)}
+                        title={`Open ${d.title}`}
+                      >
                         <DocIcon size={16} />
                       </div>
-                      <div className="doc-info">
+                      <div
+                        className="doc-info"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => handleOpenDocument(d)}
+                        title={`Open ${d.title}`}
+                      >
                         <p className="d-title">{d.title}</p>
                         <p className="d-sub">{sub}</p>
                       </div>
                       <div className="doc-progress">
-                        <div className="doc-progress-fill" style={{ width: "0%" }} />
+                        <div className="doc-progress-fill" style={{ width: `${docPct}%` }} />
                       </div>
-                      <div className="doc-pct">0%</div>
+                      <div className="doc-pct">{docPct}%</div>
                       <div className="doc-more">
                         <button
                           type="button"

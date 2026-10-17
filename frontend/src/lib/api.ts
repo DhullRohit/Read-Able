@@ -75,9 +75,26 @@ export const documentApi = {
     );
   },
   getStream: (id: number) =>
-  api.get<Blob>(`/documents/${id}/stream`, {
-    responseType: "blob",
-  }),
+    api.get<Blob>(`/documents/${id}/stream`, {
+      responseType: "blob",
+    }),
+
+  getContent: (id: number) =>
+    api.get<{
+      success: boolean;
+      data: {
+        documentId: number;
+        title: string;
+        fileName: string;
+        status: string;
+        totalPages: number;
+        pages: Array<{
+          pageNumber: number;
+          text: string;
+          paragraphs: string[];
+        }>;
+      };
+    }>(`/documents/${id}/content`),
 
   update: (id: number, data: { title?: string; fileName?: string }) =>
     api.put<{ success: boolean; data: DocumentItem }>(
@@ -88,6 +105,35 @@ export const documentApi = {
   delete: (id: number) =>
     api.delete<{ success: boolean; data: { id: number } }>(
       `/documents/${id}`
+    ),
+};
+
+export interface ReadingProgressData {
+  documentId: string;
+  currentPage: number;
+  totalPages: number;
+  percentage: number;
+  lastReadAt: string;
+}
+
+export const readingApi = {
+  getProgress: (documentId: string | number) =>
+    api.get<{ success: boolean; data: ReadingProgressData | null }>(
+      `/reading/progress/${documentId}`
+    ),
+
+  saveProgress: (
+    documentId: string | number,
+    data: { currentPage: number; totalPages?: number; lastReadAt?: string }
+  ) =>
+    api.post<{ success: boolean; data: ReadingProgressData }>(
+      `/reading/progress/${documentId}`,
+      data
+    ),
+
+  getAllProgress: () =>
+    api.get<{ success: boolean; data: Record<string, ReadingProgressData> }>(
+      "/reading/progress"
     ),
 };
 
