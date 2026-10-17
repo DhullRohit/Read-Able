@@ -2,6 +2,8 @@
 import prisma from "../../config/database.js";
 import { NotFoundError, ForbiddenError } from "../../shared/utils/errors.js";
 import storageService from "../../shared/storage/storage.service.js";
+import { invalidateDocumentContent } from "./extraction/document-extraction.service.js";
+import readingProgressService from "../reading/reading.service.js";
 
 export const getDocumentsByUser = async (userId) => {
   return await prisma.document.findMany({
@@ -139,6 +141,10 @@ export const deleteDocument = async (id, userId) => {
       console.error(`Failed to clean up storage file for key ${document.s3Key}:`, err);
     }
   }
+
+  // Clean up cached extraction and reading progress
+  invalidateDocumentContent(id);
+  readingProgressService.clearProgress(userId, id);
 
   return { id };
 };

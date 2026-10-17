@@ -1,5 +1,6 @@
 // Handles HTTP requests and responses for document management endpoints (upload, retrieve, delete)
 import * as documentService from "./document.service.js";
+import * as extractionService from "./extraction/document-extraction.service.js";
 import { sendSuccess } from "../../shared/utils/response.js";
 import { safelyDeleteFile } from "../../shared/middleware/upload.middleware.js";
 import storageService from "../../shared/storage/storage.service.js";
@@ -34,6 +35,13 @@ export const createDocument = async (req, res, next) => {
         file: req.file,
         title: req.body?.title,
       });
+
+      // Asynchronously trigger text extraction in the background
+      extractionService.extractDocument(document).catch((err) => {
+        // Status and error are captured inside extractionStore
+        console.error(`Background text extraction failed for document ${document.id}:`, err.message);
+      });
+
       return sendSuccess(res, document, "Document uploaded successfully", 201);
     }
 
@@ -105,6 +113,21 @@ export const streamDocument = async (req, res, next) => {
     });
 
     stream.pipe(res);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getDocumentContent = async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new NotFoundError("Document not found");
+    }
+
+    const content = await extractionService.getDocumentContent(id, req.user.id);
+    sendSuccess(res, content, "Document content retrieved successfully");
   } catch (err) {
     next(err);
   }

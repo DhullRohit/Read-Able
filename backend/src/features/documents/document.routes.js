@@ -8,6 +8,7 @@ import {
   updateDocument,
   deleteDocument,
   streamDocument,
+  getDocumentContent,
 } from "./document.controller.js";
 import { uploadDocumentMiddleware } from "../../shared/middleware/upload.middleware.js";
 
@@ -22,5 +23,6 @@ router.get("/:id", getDocument);
 router.put("/:id", updateDocument);
 router.delete("/:id", deleteDocument);
 router.get("/:id/stream", streamDocument);
+router.get("/:id/content", getDocumentContent);
 
 export default router;
