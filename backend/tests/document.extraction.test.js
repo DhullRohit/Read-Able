@@ -234,6 +234,9 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
     let originalGetStream;
     let originalFileExists;
     let originalFindUnique;
+    let originalDocumentUpdate;
+    let originalDocumentPage;
+    let originalTransaction;
 
     before(() => {
       isolatedBaseDir = fs.mkdtempSync(
@@ -247,6 +250,9 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
       originalGetStream = storageService.getStream;
       originalFileExists = storageService.fileExists;
       originalFindUnique = prisma.document.findUnique.bind(prisma.document);
+      originalDocumentUpdate = prisma.document.update.bind(prisma.document);
+      originalDocumentPage = prisma.documentPage;
+      originalTransaction = prisma.$transaction.bind(prisma);
 
       storageService.getStream = (key) => testProvider.getStream(key);
       storageService.fileExists = (key) => testProvider.fileExists(key);
@@ -256,6 +262,9 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
       storageService.getStream = originalGetStream;
       storageService.fileExists = originalFileExists;
       prisma.document.findUnique = originalFindUnique;
+      prisma.document.update = originalDocumentUpdate;
+      prisma.documentPage = originalDocumentPage;
+      prisma.$transaction = originalTransaction;
 
       if (isolatedBaseDir && fs.existsSync(isolatedBaseDir)) {
         fs.rmSync(isolatedBaseDir, { recursive: true, force: true });
@@ -270,6 +279,9 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
       ]);
       fs.writeFileSync(path.join(isolatedStorageDir, testKey), pdfBytes);
 
+      let docStatus = "UPLOADED";
+      let docPages = [];
+
       const mockDoc = {
         id: 101,
         title: "Test Doc",
@@ -278,11 +290,21 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
         fileSize: pdfBytes.length,
         mimeType: "application/pdf",
         userId: 1,
+        status: "UPLOADED",
       };
 
-      prisma.document.findUnique = async () => mockDoc;
+      prisma.document.findUnique = async () => ({ ...mockDoc, status: docStatus });
+      prisma.document.update = async ({ data }) => {
+        docStatus = data.status;
+        return { ...mockDoc, status: docStatus };
+      };
+      prisma.documentPage = {
+        deleteMany: async () => { docPages = []; return { count: 0 }; },
+        createMany: async ({ data }) => { docPages = [...data]; return { count: data.length }; },
+        findMany: async () => docPages.map((p) => ({ pageNumber: p.pageNumber, text: p.text, paragraphs: p.paragraphs })),
+      };
+      prisma.$transaction = async (fn) => fn(prisma);
 
-      // First call performs extraction
       const content = await extractionService.getDocumentContent(101, 1);
 
       assert.equal(content.documentId, 101);
@@ -295,30 +317,42 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
       assert.match(content.pages[1].text, /Chapter 2/);
       assert.ok(content.extractedAt);
 
-      // Status helper returns PROCESSED
+      // Status helper is now async
       assert.equal(
-        extractionService.getDocumentProcessingStatus(101),
+        await extractionService.getDocumentProcessingStatus(101),
         "PROCESSED"
       );
 
-      // Invalidation clears cache
-      extractionService.invalidateDocumentContent(101);
+      // Invalidation resets status to UPLOADED (now async)
+      await extractionService.invalidateDocumentContent(101);
       assert.equal(
-        extractionService.getDocumentProcessingStatus(101),
-        null
+        await extractionService.getDocumentProcessingStatus(101),
+        "UPLOADED"
       );
     });
 
     it("throws NotFoundError when document file is missing in storage", async () => {
+      let docStatus = "UPLOADED";
       const mockDoc = {
         id: 102,
         title: "Missing File Doc",
         fileName: "missing.pdf",
         s3Key: "non-existent-key.pdf",
         userId: 1,
+        status: "UPLOADED",
       };
 
-      prisma.document.findUnique = async () => mockDoc;
+      prisma.document.findUnique = async () => ({ ...mockDoc, status: docStatus });
+      prisma.document.update = async ({ data }) => {
+        docStatus = data.status;
+        return { ...mockDoc, status: docStatus };
+      };
+      prisma.documentPage = {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async () => ({ count: 0 }),
+        findMany: async () => [],
+      };
+      prisma.$transaction = async (fn) => fn(prisma);
 
       await assert.rejects(
         () => extractionService.getDocumentContent(102, 1),
@@ -333,15 +367,27 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
         Buffer.from("corrupted not a valid pdf header")
       );
 
+      let docStatus = "UPLOADED";
       const mockDoc = {
         id: 103,
         title: "Corrupted Doc",
         fileName: "corrupt.pdf",
         s3Key: corruptedKey,
         userId: 1,
+        status: "UPLOADED",
       };
 
-      prisma.document.findUnique = async () => mockDoc;
+      prisma.document.findUnique = async () => ({ ...mockDoc, status: docStatus });
+      prisma.document.update = async ({ data }) => {
+        docStatus = data.status;
+        return { ...mockDoc, status: docStatus };
+      };
+      prisma.documentPage = {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async () => ({ count: 0 }),
+        findMany: async () => [],
+      };
+      prisma.$transaction = async (fn) => fn(prisma);
 
       await assert.rejects(
         () => extractionService.getDocumentContent(103, 1),
@@ -349,7 +395,7 @@ describe("Phase 2: Document Text Extraction Pipeline", () => {
       );
 
       assert.equal(
-        extractionService.getDocumentProcessingStatus(103),
+        await extractionService.getDocumentProcessingStatus(103),
         "FAILED"
       );
     });

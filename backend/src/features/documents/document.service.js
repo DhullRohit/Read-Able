@@ -142,8 +142,10 @@ export const deleteDocument = async (id, userId) => {
     }
   }
 
-  // Clean up cached extraction and reading progress
-  invalidateDocumentContent(id);
+  // Clean up persisted extraction content and reading progress.
+  // DocumentPage rows are already cascade-deleted above; invalidateDocumentContent
+  // attempts a status reset and safely ignores the not-found error.
+  await invalidateDocumentContent(id);
   readingProgressService.clearProgress(userId, id);
 
   return { id };
