@@ -15,23 +15,20 @@
  *       ↓
  * Structured Document Content
  *       ↓
- * In-memory Store / Expose via API
+ * Persist to PostgreSQL (DocumentPage table + Document.status)
  *
- * Schema limitation:
- * The database schema is frozen (no status or extracted content fields).
- * To respect Rule 1, extracted content and processing states (PROCESSING, PROCESSED, FAILED)
- * are cleanly managed in an in-memory store and exposed via the service and API.
+ * Persistence strategy:
+ * Each extracted page is stored as a DocumentPage row linked to the Document.
+ * Document.status reflects the current extraction state (UPLOADED / PROCESSING / PROCESSED / FAILED).
+ * On backend restart, content is read from the DB instead of being re-extracted from storage.
  */
 
+import prisma from "../../../config/database.js";
 import storageService from "../../../shared/storage/storage.service.js";
 import { NotFoundError } from "../../../shared/utils/errors.js";
 import * as documentService from "../document.service.js";
 import { extractTextFromPdfBuffer } from "./pdf-extractor.js";
 import { normalizeText, extractParagraphs } from "./text-normalizer.js";
-
-// In-memory cache for extracted document content and processing states
-// Map<documentId, { status: 'PROCESSING'|'PROCESSED'|'FAILED', data?: Object, error?: string, updatedAt: string }>
-const extractionStore = new Map();
 
 /**
  * Converts a readable stream to a Buffer.
@@ -48,8 +45,8 @@ async function streamToBuffer(stream) {
 }
 
 /**
- * Extracts and normalizes text content for a given document entity.
- * Retrieves PDF stream strictly through the existing StorageService abstraction.
+ * Extracts and normalizes text content for a given document entity,
+ * then persists all pages and status to PostgreSQL in a single transaction.
  *
  * @param {import("@prisma/client").Document} document
  * @returns {Promise<Object>}
@@ -57,10 +54,10 @@ async function streamToBuffer(stream) {
 export async function extractDocument(document) {
   const docId = document.id;
 
-  // Mark processing state
-  extractionStore.set(docId, {
-    status: "PROCESSING",
-    updatedAt: new Date().toISOString(),
+  // Mark document as PROCESSING in DB
+  await prisma.document.update({
+    where: { id: docId },
+    data: { status: "PROCESSING" },
   });
 
   try {
@@ -88,6 +85,28 @@ export async function extractDocument(document) {
       };
     });
 
+    // Persist pages + update status atomically
+    await prisma.$transaction(async (tx) => {
+      // Remove any previously extracted pages for this document (idempotent retry)
+      await tx.documentPage.deleteMany({ where: { documentId: docId } });
+
+      // Insert all pages
+      await tx.documentPage.createMany({
+        data: structuredPages.map((p) => ({
+          documentId: docId,
+          pageNumber: p.pageNumber,
+          text: p.text,
+          paragraphs: p.paragraphs,
+        })),
+      });
+
+      // Mark document as PROCESSED
+      await tx.document.update({
+        where: { id: docId },
+        data: { status: "PROCESSED" },
+      });
+    });
+
     const structuredContent = {
       documentId: document.id,
       title: document.title,
@@ -98,19 +117,12 @@ export async function extractDocument(document) {
       extractedAt: new Date().toISOString(),
     };
 
-    // Store in cache
-    extractionStore.set(docId, {
-      status: "PROCESSED",
-      data: structuredContent,
-      updatedAt: new Date().toISOString(),
-    });
-
     return structuredContent;
   } catch (err) {
-    extractionStore.set(docId, {
-      status: "FAILED",
-      error: err.message || "Failed to extract text from document",
-      updatedAt: new Date().toISOString(),
+    // Mark document as FAILED in DB
+    await prisma.document.update({
+      where: { id: docId },
+      data: { status: "FAILED" },
     });
 
     throw err;
@@ -118,7 +130,8 @@ export async function extractDocument(document) {
 }
 
 /**
- * Retrieves the structured text content for a document, performing extraction if not yet cached.
+ * Retrieves the structured text content for a document from the DB.
+ * Falls back to live extraction if the document has not yet been processed.
  * Enforces authentication and document ownership via documentService.getDocumentById.
  *
  * @param {number} documentId
@@ -129,57 +142,79 @@ export async function getDocumentContent(documentId, userId) {
   // Enforce document existence and user ownership
   const document = await documentService.getDocumentById(documentId, userId);
 
-  const cached = extractionStore.get(documentId);
+  if (document.status === "PROCESSED") {
+    // Serve from DB
+    const pages = await prisma.documentPage.findMany({
+      where: { documentId: document.id },
+      orderBy: { pageNumber: "asc" },
+      select: { pageNumber: true, text: true, paragraphs: true },
+    });
 
-  if (cached) {
-    if (cached.status === "PROCESSED" && cached.data) {
-      return cached.data;
-    }
-
-    if (cached.status === "PROCESSING") {
-      return {
-        documentId: document.id,
-        title: document.title,
-        fileName: document.fileName,
-        status: "PROCESSING",
-        totalPages: 0,
-        pages: [],
-      };
-    }
-
-    if (cached.status === "FAILED") {
-      return {
-        documentId: document.id,
-        title: document.title,
-        fileName: document.fileName,
-        status: "FAILED",
-        totalPages: 0,
-        pages: [],
-        error: cached.error,
-      };
-    }
+    return {
+      documentId: document.id,
+      title: document.title,
+      fileName: document.fileName,
+      status: "PROCESSED",
+      totalPages: pages.length,
+      pages,
+    };
   }
 
-  // Not yet cached or previous state expired: extract now
+  if (document.status === "PROCESSING") {
+    return {
+      documentId: document.id,
+      title: document.title,
+      fileName: document.fileName,
+      status: "PROCESSING",
+      totalPages: 0,
+      pages: [],
+    };
+  }
+
+  if (document.status === "FAILED") {
+    return {
+      documentId: document.id,
+      title: document.title,
+      fileName: document.fileName,
+      status: "FAILED",
+      totalPages: 0,
+      pages: [],
+    };
+  }
+
+  // UPLOADED or unknown: extract now and persist to DB
   return await extractDocument(document);
 }
 
 /**
- * Removes cached extraction content when a document is deleted.
+ * Removes persisted extraction content when a document is deleted.
+ * DocumentPage rows are cascade-deleted by PostgreSQL on Document deletion.
+ * This function resets the status to UPLOADED to keep the service layer consistent
+ * when called from deleteDocument before the Document row itself is removed.
  *
  * @param {number} documentId
  */
-export function invalidateDocumentContent(documentId) {
-  extractionStore.delete(documentId);
+export async function invalidateDocumentContent(documentId) {
+  try {
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { status: "UPLOADED" },
+    });
+  } catch (_err) {
+    // Document may already be gone (cascade delete in progress); safe to ignore.
+  }
 }
 
 /**
- * Returns current processing status for a document.
+ * Returns current processing status for a document from the DB.
  *
  * @param {number} documentId
- * @returns {string|null}
+ * @returns {Promise<string|null>}
  */
-export function getDocumentProcessingStatus(documentId) {
-  const cached = extractionStore.get(documentId);
-  return cached ? cached.status : null;
+export async function getDocumentProcessingStatus(documentId) {
+  const doc = await prisma.document.findUnique({
+    where: { id: documentId },
+    select: { status: true },
+  });
+  return doc ? doc.status : null;
 }
