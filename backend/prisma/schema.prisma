@@ -19,17 +19,42 @@ model User {
   documents    Document[]
 }
 
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
 model Document {
-  id        Int      @id @default(autoincrement())
+  id        Int            @id @default(autoincrement())
   title     String
   fileName  String
-  s3Key     String   @unique
+  s3Key     String         @unique
   fileSize  Int
   mimeType  String
+  status    DocumentStatus @default(UPLOADED)
 
   userId    Int
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  pages     DocumentPage[]
+
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
+model DocumentPage {
+  id         Int            @id @default(autoincrement())
+  pageNumber Int
+  text       String
+  paragraphs String[]
+
+  documentId Int
+  document   Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  createdAt  DateTime       @default(now())
+
+  @@unique([documentId, pageNumber])
+  @@index([documentId])
 }
