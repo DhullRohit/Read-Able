@@ -54,11 +54,18 @@ async function streamToBuffer(stream) {
 export async function extractDocument(document) {
   const docId = document.id;
 
-  // Mark document as PROCESSING in DB
-  await prisma.document.update({
-    where: { id: docId },
-    data: { status: "PROCESSING" },
-  });
+  // Mark document as PROCESSING in DB (safely catch if document was deleted)
+  try {
+    await prisma.document.update({
+      where: { id: docId },
+      data: { status: "PROCESSING" },
+    });
+  } catch (err) {
+    if (err.code === "P2025") {
+      return null;
+    }
+    throw err;
+  }
 
   try {
     const exists = await storageService.fileExists(document.s3Key);
@@ -84,6 +91,15 @@ export async function extractDocument(document) {
         paragraphs,
       };
     });
+
+    // Check if document was deleted while extracting
+    const currentDoc = await prisma.document.findUnique({
+      where: { id: docId },
+      select: { id: true },
+    });
+    if (!currentDoc) {
+      return null;
+    }
 
     // Persist pages + update status atomically
     await prisma.$transaction(async (tx) => {
@@ -119,11 +135,19 @@ export async function extractDocument(document) {
 
     return structuredContent;
   } catch (err) {
-    // Mark document as FAILED in DB
-    await prisma.document.update({
-      where: { id: docId },
-      data: { status: "FAILED" },
-    });
+    if (err.code === "P2025") {
+      return null;
+    }
+
+    // Mark document as FAILED in DB if it still exists
+    try {
+      await prisma.document.update({
+        where: { id: docId },
+        data: { status: "FAILED" },
+      });
+    } catch (e) {
+      // Document might have been deleted; ignore status update error
+    }
 
     throw err;
   }

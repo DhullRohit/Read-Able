@@ -11,6 +11,7 @@ import {
   getDocumentContent,
 } from "./document.controller.js";
 import { uploadDocumentMiddleware } from "../../shared/middleware/upload.middleware.js";
+import documentReadingRoutes from "../reading/reading.document.routes.js";
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.put("/:id", updateDocument);
 router.delete("/:id", deleteDocument);
 router.get("/:id/stream", streamDocument);
 router.get("/:id/content", getDocumentContent);
+router.use("/:documentId", documentReadingRoutes);
 
 export default router;

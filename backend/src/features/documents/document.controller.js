@@ -36,6 +36,11 @@ export const createDocument = async (req, res, next) => {
         title: req.body?.title,
       });
 
+      // If duplicate, do NOT run extraction service again
+      if (document.duplicate) {
+        return sendSuccess(res, document, "This document is already in your library", 200);
+      }
+
       // Asynchronously trigger text extraction in the background
       extractionService.extractDocument(document).catch((err) => {
         // Status and error are captured inside extractionStore
