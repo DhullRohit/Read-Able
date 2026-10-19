@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { authApi, documentApi, readingApi, type DocumentItem } from "@/lib/api";
+import { authApi, documentApi, readingApi, type DocumentItem, type RecentDocumentItem } from "@/lib/api";
 import {
   LayoutDashboard,
   BookOpen,
@@ -20,12 +20,6 @@ import {
   Flame,
   Target,
   Quote,
-  File,
-  MoreVertical,
-  Book,
-  Pencil,
-  Download,
-  Trash2,
   SkipBack,
   SkipForward,
   Menu,
@@ -36,6 +30,7 @@ import {
   Loader2,
   RefreshCw,
   AlertCircle,
+  Trash2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -56,14 +51,6 @@ const NAV_ITEMS = [
 const NOTIFICATIONS: { t: string; s: string }[] = [];
 
 const ZOOM_STEPS = [100, 115, 130];
-
-function formatFileSize(bytes: number): string {
-  if (!bytes || bytes <= 0) return "0 KB";
-  const k = 1024;
-  const sizes = ["Bytes", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
-}
 
 function formatTimeAgo(dateString: string): string {
   if (!dateString) return "Recently";
@@ -93,7 +80,6 @@ export default function ReadAbleDashboard() {
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [openDocMenu, setOpenDocMenu] = useState<number | null>(null);
 
   const [fontSize, setFontSize] = useState(18);
   const [font, setFont] = useState("OpenDyslexic");
@@ -113,12 +99,16 @@ export default function ReadAbleDashboard() {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Document states
+  // Document and Reading states
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
-  const [docProgress, setDocProgress] = useState<Record<string, { percentage: number; currentPage: number }>>({});
+  const [recentDocs, setRecentDocs] = useState<RecentDocumentItem[]>([]);
+  const [bookmarksCount, setBookmarksCount] = useState<number>(0);
+  const [notesCount, setNotesCount] = useState<number>(0);
   const [loadingDocs, setLoadingDocs] = useState<boolean>(true);
   const [errorDocs, setErrorDocs] = useState<string | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
+  const [docToDelete, setDocToDelete] = useState<DocumentItem | null>(null);
+  const [deleting, setDeleting] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // -- helpers ---------------------------------------------------------
@@ -134,14 +124,28 @@ export default function ReadAbleDashboard() {
     setLoadingDocs(true);
     setErrorDocs(null);
     try {
-      const [res, progRes] = await Promise.all([
+      const [res, recentRes, bookmarksRes, notesRes] = await Promise.all([
         documentApi.getAll(),
-        readingApi.getAllProgress().catch(() => null),
+        readingApi.getRecent().catch(() => null),
+        readingApi.getBookmarks().catch(() => null),
+        readingApi.getNotes().catch(() => null),
       ]);
       setDocuments(res.data?.data || []);
-      if (progRes?.data?.data) {
-        setDocProgress(progRes.data.data);
-      }
+      const fetchedRecent = recentRes?.data?.data || [];
+      setRecentDocs(fetchedRecent);
+
+      const fetchedBookmarks = bookmarksRes?.data?.data || [];
+      const countSavedSpots = fetchedBookmarks.filter(
+        (b) => b.lastPage !== null && b.lastPage >= 1
+      ).length;
+      setBookmarksCount(countSavedSpots);
+
+      const fetchedNotes = notesRes?.data?.data || [];
+      const totalNotes = fetchedNotes.reduce(
+        (acc, d) => acc + (d.notes ? d.notes.length : 0),
+        0
+      );
+      setNotesCount(totalNotes);
     } catch {
       setErrorDocs("Failed to load your documents. Please check backend connection and retry.");
     } finally {
@@ -201,12 +205,16 @@ const handleFileSelected = async (
 
     setUploading(true);
 
-    await documentApi.upload(
+    const res = await documentApi.upload(
       file,
       file.name.replace(/\.[^/.]+$/, "")
     );
 
-    toast("Document uploaded successfully");
+    if (res.data?.data?.duplicate) {
+      toast("This document is already in your library. Showing your previous bookmarks and notes.");
+    } else {
+      toast("Document uploaded successfully");
+    }
     await loadDocuments();
   } catch {
     toast("Failed to upload document");
@@ -219,59 +227,32 @@ const handleFileSelected = async (
   }
 };
 
+  const handleConfirmDelete = async () => {
+    if (!docToDelete) return;
+    const docId = docToDelete.id;
+    setDeleting(true);
+    try {
+      await documentApi.delete(docId);
+      // Remove from Library list immediately
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+      setRecentDocs((prev) => prev.filter((d) => d.documentId !== docId));
+      setDocToDelete(null);
+      toast("Document deleted successfully");
+      // Refresh Dashboard Recent documents, the Resume card, Bookmarks, Notes and all counts
+      await loadDocuments();
+    } catch {
+      toast("Failed to delete document");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleOpenDocument = (doc: DocumentItem) => {
     navigate({
       to: "/documents/$id/read",
       params: { id: String(doc.id) },
+      search: { page: 1 },
     });
-  };
-
-const handleDownloadDocument = async (doc: DocumentItem) => {
-  try {
-    const response = await documentApi.getStream(doc.id);
-    const pdfBlob = new Blob([response.data], {
-      type: "application/pdf",
-    });
-    const pdfUrl = URL.createObjectURL(pdfBlob);
-    const link = document.createElement("a");
-
-    link.href = pdfUrl;
-    link.download = doc.fileName || `${doc.title}.pdf`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-
-    window.setTimeout(() => URL.revokeObjectURL(pdfUrl), 1_000);
-    toast("Download started");
-  } catch {
-    toast("Could not download PDF. Check that the file exists on the server.");
-  }
-};
-
-
-  const handleRenameDoc = async (doc: DocumentItem) => {
-    setOpenDocMenu(null);
-    const newTitle = window.prompt("Enter new document title:", doc.title);
-    if (!newTitle || newTitle.trim() === "" || newTitle.trim() === doc.title) return;
-    try {
-      await documentApi.update(doc.id, { title: newTitle.trim() });
-      toast("Document renamed");
-      await loadDocuments();
-    } catch {
-      toast("Failed to rename document");
-    }
-  };
-
-  const handleDeleteDoc = async (doc: DocumentItem) => {
-    setOpenDocMenu(null);
-    if (!window.confirm(`Are you sure you want to delete "${doc.title}"?`)) return;
-    try {
-      await documentApi.delete(doc.id);
-      toast("Document deleted");
-      await loadDocuments();
-    } catch {
-      toast("Failed to delete document");
-    }
   };
 
   const selectNav = (name: string) => {
@@ -279,8 +260,14 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
     setSidebarOpen(false);
     if (name === "Upload Document") {
       handleUploadClick();
+    } else if (name === "Bookmarks") {
+      navigate({ to: "/bookmarks" });
+    } else if (name === "Notes") {
+      navigate({ to: "/notes" });
+    } else if (name === "Dashboard" || name === "My Library") {
+      // Switches active tab on dashboard
     } else {
-      toast(name === "Dashboard" ? "Dashboard" : name + " — build this screen next");
+      toast(name + " — build this screen next");
     }
   };
 
@@ -308,19 +295,11 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
   const toggleDropdown = (which: "notif" | "profile") => {
     if (which === "notif") {
       setProfileOpen(false);
-      setOpenDocMenu(null);
       setNotifOpen((v) => !v);
     } else if (which === "profile") {
       setNotifOpen(false);
-      setOpenDocMenu(null);
       setProfileOpen((v) => !v);
     }
-  };
-
-  const toggleDocMenu = (i: number) => {
-    setNotifOpen(false);
-    setProfileOpen(false);
-    setOpenDocMenu((cur) => (cur === i ? null : i));
   };
 
   // -- close dropdowns / sidebar on outside click -----------------------
@@ -328,10 +307,9 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && !target.closest(".rel") && !target.closest(".doc-more")) {
+      if (target && !target.closest(".rel")) {
         setNotifOpen(false);
         setProfileOpen(false);
-        setOpenDocMenu(null);
       }
     };
     document.addEventListener("click", handler);
@@ -449,11 +427,10 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
         .brand-mark{width:34px;height:34px;border-radius:9px;background:#0A0A0A;color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
         .brand h1{font-size:1.125rem;margin:0;font-weight:600;}
         .brand p{font-size:0.75rem;color:var(--text-3);margin:0;}
-        .nav{display:flex;flex-direction:column;gap:2px;margin-top:8px;}
-        .nav button{display:flex;align-items:center;gap:12px;padding:10px 12px;border:none;background:none;border-radius:10px;font-size:0.875rem;color:var(--text-2);cursor:pointer;text-align:left;width:100%;}
-        .nav button svg{flex-shrink:0;}
-        .nav button:hover{background:var(--card-soft);}
-        .nav button.active{background:var(--accent-tint);color:var(--accent);font-weight:600;}
+        .nav button, .nav a{display:flex;align-items:center;gap:12px;padding:10px 12px;border:none;background:none;border-radius:10px;font-size:0.875rem;color:var(--text-2);cursor:pointer;text-align:left;width:100%;text-decoration:none;box-sizing:border-box;}
+        .nav button svg, .nav a svg{flex-shrink:0;}
+        .nav button:hover, .nav a:hover{background:var(--card-soft);}
+        .nav button.active, .nav a.active{background:var(--accent-tint);color:var(--accent);font-weight:600;}
         .profile{display:flex;align-items:center;gap:10px;padding:14px 8px 0;margin-top:16px;border-top:1px solid var(--border);position:relative;}
         .avatar{width:34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:0.8125rem;flex-shrink:0;}
         .profile .name{font-size:0.8125rem;font-weight:500;}
@@ -596,6 +573,7 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
             {NAV_ITEMS.map(({ name, icon: Icon }) => (
               <button
                 key={name}
+                type="button"
                 className={activeNav === name ? "active" : ""}
                 onClick={() => selectNav(name)}
               >
@@ -763,37 +741,52 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
             </div>
           </div>
 
-          {/* Continue reading */}
-          {documents.length > 0 && (
+          {/* Continue reading / Resume card */}
+          {recentDocs.length > 0 ? (
             <div className="card continue-card" style={{ marginBottom: 18 }}>
               <div className="cover">
                 <BookOpen size={20} />
               </div>
               <div className="continue-info">
-                <p className="book-title">{documents[0].title}</p>
-                <p className="book-sub">{documents[0].fileName}</p>
+                <p className="book-title">{recentDocs[0].title}</p>
+                <p className="book-sub">{recentDocs[0].fileName} • Page {recentDocs[0].lastPage}</p>
                 <div className="progress-row">
-                  <div className="progress-track">
-                    <div
-                      className="progress-fill"
-                      style={{
-                        width: `${docProgress[String(documents[0].id)]?.percentage || 0}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="progress-pct">
-                    {docProgress[String(documents[0].id)]?.percentage || 0}%
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-3)" }}>
+                    Last read: {formatTimeAgo(recentDocs[0].updatedAt)}
                   </span>
                 </div>
               </div>
 
-              <button className="resume-btn" onClick={() => handleOpenDocument(documents[0])}>
+              <button
+                className="resume-btn"
+                onClick={() => {
+                  navigate({
+                    to: "/documents/$id/read",
+                    params: { id: String(recentDocs[0].documentId) },
+                    search: { page: recentDocs[0].lastPage || 1 },
+                  });
+                }}
+              >
                 <Play size={14} />
-                {docProgress[String(documents[0].id)]?.percentage ? "Resume" : "Read"}
+                <span>Resume</span>
               </button>
-
             </div>
-          )}
+          ) : documents.length === 0 ? (
+            <div className="card continue-card" style={{ marginBottom: 18 }}>
+              <div className="cover">
+                <Upload size={20} />
+              </div>
+              <div className="continue-info">
+                <p className="book-title">Upload a document to start</p>
+                <p className="book-sub">Add your first PDF to begin reading</p>
+              </div>
+
+              <button className="resume-btn" onClick={handleUploadClick}>
+                <Upload size={14} />
+                <span>Upload</span>
+              </button>
+            </div>
+          ) : null}
 
           {/* Quick actions */}
           <div className="actions-grid">
@@ -811,28 +804,74 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
               <p className="a-title">My library</p>
               <p className="a-sub">View and manage</p>
             </div>
-            <div className="action-tile" onClick={() => selectNav("Read Aloud")}>
-              <div className="a-icon">
-                <Headphones size={18} />
-              </div>
-              <p className="a-title">Read aloud</p>
-              <p className="a-sub">Natural voices</p>
-            </div>
-            <div className="action-tile" onClick={() => selectNav("Bookmarks")}>
+            <div
+              className="action-tile"
+              onClick={() => navigate({ to: "/bookmarks" })}
+              style={{ cursor: "pointer" }}
+            >
               <div className="a-icon">
                 <Bookmark size={18} />
               </div>
               <p className="a-title">Bookmarks</p>
-              <p className="a-sub">0 saved spots</p>
+              <p className="a-sub">{bookmarksCount} saved spots</p>
+            </div>
+            <div
+              className="action-tile"
+              onClick={() => navigate({ to: "/notes" })}
+              style={{ cursor: "pointer" }}
+            >
+              <div className="a-icon">
+                <StickyNote size={18} />
+              </div>
+              <p className="a-title">Notes</p>
+              <p className="a-sub">{notesCount} notes</p>
             </div>
           </div>
 
-          {/* Recent documents */}
+          {/* Recent documents & My Library */}
           <div className="card">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div className="card-title" style={{ margin: 0 }}>
-                <FileText size={17} />
-                Recent documents
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setActiveNav("Dashboard")}
+                  style={{
+                    border: "none",
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    fontSize: "0.875rem",
+                    fontWeight: activeNav !== "My Library" ? 700 : 500,
+                    color: activeNav !== "My Library" ? "var(--text-1)" : "var(--text-3)",
+                    background: activeNav !== "My Library" ? "var(--card-soft)" : "transparent",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <FileText size={16} />
+                  <span>Recent</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveNav("My Library")}
+                  style={{
+                    border: "none",
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    fontSize: "0.875rem",
+                    fontWeight: activeNav === "My Library" ? 700 : 500,
+                    color: activeNav === "My Library" ? "var(--text-1)" : "var(--text-3)",
+                    background: activeNav === "My Library" ? "var(--card-soft)" : "transparent",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <BookOpen size={16} />
+                  <span>My Library ({documents.length})</span>
+                </button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                 <button
@@ -925,8 +964,8 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
               </div>
             )}
 
-            {/* Empty State */}
-            {!loadingDocs && !errorDocs && documents.length === 0 && (
+            {/* Empty State for Recent Documents */}
+            {!loadingDocs && !errorDocs && recentDocs.length === 0 && (
               <div
                 style={{
                   padding: "36px 20px",
@@ -936,131 +975,227 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
                   margin: "8px 0",
                 }}
               >
-                <div
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: "12px",
-                    background: "var(--accent-tint)",
-                    color: "var(--accent)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    margin: "0 auto 12px",
-                  }}
-                >
-                  <Upload size={22} />
-                </div>
-                <p style={{ fontWeight: 600, fontSize: "0.9375rem", margin: "0 0 4px" }}>No documents yet</p>
-                <p style={{ color: "var(--text-3)", fontSize: "0.8125rem", margin: "0 0 16px" }}>
-                  Upload your first document to start reading with personalized AI assistance.
+                <p style={{ fontWeight: 600, fontSize: "0.9375rem", margin: "0 0 4px" }}>
+                  You haven't read anything yet
                 </p>
-                <button
-                  type="button"
-                  onClick={handleUploadClick}
-                  disabled={uploading}
-                  style={{
-                    background: "var(--accent)",
-                    color: "#fff",
-                    border: "none",
-                    padding: "9px 18px",
-                    borderRadius: "9px",
-                    fontSize: "0.8125rem",
-                    cursor: "pointer",
-                    fontWeight: 500,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
-                >
-                  <Upload size={14} />
-                  <span>{uploading ? "Uploading…" : "Upload Document"}</span>
-                </button>
+                <p style={{ color: "var(--text-3)", fontSize: "0.8125rem", margin: "0 0 16px" }}>
+                  Open a document to start reading and tracking progress.
+                </p>
+                {documents.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenDocument(documents[0])}
+                    style={{
+                      background: "var(--accent)",
+                      color: "#fff",
+                      border: "none",
+                      padding: "9px 18px",
+                      borderRadius: "9px",
+                      fontSize: "0.8125rem",
+                      cursor: "pointer",
+                      fontWeight: 500,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                    }}
+                  >
+                    <Play size={14} />
+                    <span>Start reading</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleUploadClick}
+                    disabled={uploading}
+                    style={{
+                      background: "var(--accent)",
+                      color: "#fff",
+                      border: "none",
+                      padding: "9px 18px",
+                      borderRadius: "9px",
+                      fontSize: "0.8125rem",
+                      cursor: "pointer",
+                      fontWeight: 500,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                    }}
+                  >
+                    <Upload size={14} />
+                    <span>Upload a document to start</span>
+                  </button>
+                )}
               </div>
             )}
 
-            {/* Populated Documents List */}
-            {!loadingDocs && !errorDocs && documents.length > 0 && (
-              <div className="doc-list">
-                {documents.map((d, i) => {
-                  const isPdf = d.mimeType?.includes("pdf") || d.fileName?.endsWith(".pdf");
-                  const DocIcon = isPdf ? File : FileText;
-                  const sub = `${isPdf ? "PDF" : "DOC"} · ${formatFileSize(d.fileSize)} · Added ${formatTimeAgo(d.createdAt)}`;
-                  const docPct = docProgress[String(d.id)]?.percentage || 0;
-                  return (
-                    <div className="doc-row" key={d.id}>
-                      <div
-                        className="doc-icon"
-                        style={{ cursor: "pointer" }}
-                        onClick={() => handleOpenDocument(d)}
-                        title={`Open ${d.title}`}
-                      >
-                        <DocIcon size={16} />
-                      </div>
-                      <div
-                        className="doc-info"
-                        style={{ cursor: "pointer" }}
-                        onClick={() => handleOpenDocument(d)}
-                        title={`Open ${d.title}`}
-                      >
-                        <p className="d-title">{d.title}</p>
-                        <p className="d-sub">{sub}</p>
-                      </div>
-                      <div className="doc-progress">
-                        <div className="doc-progress-fill" style={{ width: `${docPct}%` }} />
-                      </div>
-                      <div className="doc-pct">{docPct}%</div>
-                      <div className="doc-more">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleDocMenu(i);
-                          }}
+            {/* Populated Documents List (My Library or Recent) */}
+            {!loadingDocs && !errorDocs && (
+              activeNav === "My Library" ? (
+                documents.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "36px 20px",
+                      textAlign: "center",
+                      background: "var(--card-soft)",
+                      borderRadius: "12px",
+                      margin: "8px 0",
+                    }}
+                  >
+                    <p style={{ fontWeight: 600, fontSize: "0.9375rem", margin: "0 0 4px" }}>
+                      No documents in your library yet
+                    </p>
+                    <p style={{ color: "var(--text-3)", fontSize: "0.8125rem", margin: "0 0 16px" }}>
+                      Upload your first PDF document to begin reading.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleUploadClick}
+                      disabled={uploading}
+                      style={{
+                        background: "var(--accent)",
+                        color: "#fff",
+                        border: "none",
+                        padding: "9px 18px",
+                        borderRadius: "9px",
+                        fontSize: "0.8125rem",
+                        cursor: "pointer",
+                        fontWeight: 500,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <Upload size={14} />
+                      <span>Upload document</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="doc-list">
+                    {documents.map((d) => (
+                      <div className="doc-row" key={d.id}>
+                        <div
+                          className="doc-icon"
+                          style={{ cursor: "pointer" }}
+                          onClick={() => handleOpenDocument(d)}
+                          title={`Open ${d.title}`}
                         >
-                          <MoreVertical size={16} />
-                        </button>
-                        <div className={"doc-menu" + (openDocMenu === i ? " open" : "")}>
-                          <div
-                            className="item"
-                            onClick={() => {
-                              setOpenDocMenu(null);
-                              // toast("Opening " + d.title);
-                              void handleOpenDocument(d);
-                            }}
+                          <FileText size={16} />
+                        </div>
+                        <div
+                          className="doc-info"
+                          style={{ cursor: "pointer" }}
+                          onClick={() => handleOpenDocument(d)}
+                          title={`Open ${d.title}`}
+                        >
+                          <p className="d-title">{d.title}</p>
+                          <p className="d-sub">
+                            {d.fileName} • Uploaded {formatTimeAgo(d.lastUploadedAt || d.createdAt)}
+                          </p>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <button
+                            type="button"
+                            className="resume-btn"
+                            style={{ padding: "6px 14px", fontSize: "0.75rem" }}
+                            onClick={() => handleOpenDocument(d)}
                           >
-                            <Book size={14} />
-                            Open
-                          </div>
-                          <div className="item" onClick={() => handleRenameDoc(d)}>
-                            <Pencil size={14} />
-                            Rename
-                          </div>
-                          <div
-                            className="item"
-                            onClick={() => {
-                              setOpenDocMenu(null);
-                              // toast("Downloaded " + d.fileName);
-                              void handleDownloadDocument(d);
+                            <Play size={12} />
+                            <span>Read</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="doc-del-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDocToDelete(d);
                             }}
-                          >
-                            <Download size={14} />
-                            Download
-                          </div>
-                          <div
-                            className="item"
-                            onClick={() => handleDeleteDoc(d)}
-                            style={{ color: "#d64545" }}
+                            title={`Delete '${d.title}'`}
+                            style={{
+                              background: "transparent",
+                              border: "1px solid var(--border)",
+                              borderRadius: 8,
+                              padding: "6px 8px",
+                              color: "var(--text-3)",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.color = "#dc2626";
+                              e.currentTarget.style.borderColor = "#dc2626";
+                              e.currentTarget.style.background = "rgba(220, 38, 38, 0.08)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.color = "var(--text-3)";
+                              e.currentTarget.style.borderColor = "var(--border)";
+                              e.currentTarget.style.background = "transparent";
+                            }}
                           >
                             <Trash2 size={14} />
-                            Delete
-                          </div>
+                          </button>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    ))}
+                  </div>
+                )
+              ) : (
+                recentDocs.length > 0 ? (
+                  <div className="doc-list">
+                    {recentDocs.map((d) => (
+                      <div className="doc-row" key={d.documentId}>
+                        <div
+                          className="doc-icon"
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            navigate({
+                              to: "/documents/$id/read",
+                              params: { id: String(d.documentId) },
+                              search: { page: d.lastPage || 1 },
+                            });
+                          }}
+                          title={`Open ${d.title}`}
+                        >
+                          <FileText size={16} />
+                        </div>
+                        <div
+                          className="doc-info"
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            navigate({
+                              to: "/documents/$id/read",
+                              params: { id: String(d.documentId) },
+                              search: { page: d.lastPage || 1 },
+                            });
+                          }}
+                          title={`Open ${d.title}`}
+                        >
+                          <p className="d-title">{d.title}</p>
+                          <p className="d-sub">
+                            {d.fileName} • Page {d.lastPage} • Read {formatTimeAgo(d.updatedAt)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="resume-btn"
+                          style={{ padding: "6px 14px", fontSize: "0.75rem" }}
+                          onClick={() => {
+                            navigate({
+                              to: "/documents/$id/read",
+                              params: { id: String(d.documentId) },
+                              search: { page: d.lastPage || 1 },
+                            });
+                          }}
+                        >
+                          <Play size={12} />
+                          <span>Resume</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null
+              )
             )}
           </div>
         </main>
@@ -1137,6 +1272,100 @@ const handleDownloadDocument = async (doc: DocumentItem) => {
           </div>
         </aside>
       </div>
+
+      {/* Delete Document Confirmation Dialog (Requirement 3) */}
+      {docToDelete && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.55)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+            padding: 16,
+          }}
+          onClick={() => !deleting && setDocToDelete(null)}
+        >
+          <div
+            style={{
+              background: "var(--card)",
+              border: "1px solid var(--border)",
+              borderRadius: 14,
+              padding: "24px 28px",
+              maxWidth: 460,
+              width: "100%",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.25)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              style={{
+                margin: "0 0 10px",
+                fontSize: "1.125rem",
+                fontWeight: 600,
+                color: "var(--text-1)",
+              }}
+            >
+              Delete '{docToDelete.title}'?
+            </h3>
+            <p
+              style={{
+                margin: "0 0 24px",
+                fontSize: "0.875rem",
+                color: "var(--text-2)",
+                lineHeight: 1.5,
+              }}
+            >
+              This permanently removes the file, your bookmark, notes and highlights.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setDocToDelete(null)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-card-subtle)",
+                  color: "var(--text-1)",
+                  fontSize: "0.875rem",
+                  fontWeight: 500,
+                  cursor: deleting ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#fff",
+                  fontSize: "0.875rem",
+                  fontWeight: 600,
+                  cursor: deleting ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <input
         type="file"

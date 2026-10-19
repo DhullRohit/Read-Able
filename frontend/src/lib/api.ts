@@ -39,6 +39,9 @@ export interface DocumentItem {
   fileSize: number;
   mimeType: string;
   userId: number;
+  contentHash?: string | null;
+  lastUploadedAt?: string;
+  duplicate?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -116,6 +119,68 @@ export interface ReadingProgressData {
   lastReadAt: string;
 }
 
+export interface ReadingProgressRecord {
+  id: number;
+  lastPage: number;
+  updatedAt: string;
+  userId: number;
+  documentId: number;
+}
+
+export interface NoteRecord {
+  id: number;
+  page: number | null;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+  userId: number;
+  documentId: number;
+}
+
+export interface HighlightRecord {
+  id: number;
+  page: number;
+  color: "RED" | "YELLOW";
+  text: string;
+  rects: any;
+  createdAt: string;
+  userId: number;
+  documentId: number;
+}
+
+export interface ReadingPayload {
+  progress: ReadingProgressRecord | null;
+  notes: NoteRecord[];
+  highlights: HighlightRecord[];
+}
+
+export interface RecentDocumentItem {
+  documentId: number;
+  title: string;
+  fileName: string;
+  lastPage: number;
+  updatedAt: string;
+}
+
+export interface BookmarkDocumentItem {
+  documentId: number;
+  title: string;
+  fileName: string;
+  lastPage: number | null;
+  updatedAt: string;
+}
+
+export interface DocumentWithNotes {
+  documentId: number;
+  title: string;
+  notes: Array<{
+    id: number;
+    page: number | null;
+    content: string;
+    createdAt: string;
+  }>;
+}
+
 export const readingApi = {
   getProgress: (documentId: string | number) =>
     api.get<{ success: boolean; data: ReadingProgressData | null }>(
@@ -134,6 +199,88 @@ export const readingApi = {
   getAllProgress: () =>
     api.get<{ success: boolean; data: Record<string, ReadingProgressData> }>(
       "/reading/progress"
+    ),
+
+  // Phase 3 Reading Features
+  getReading: (documentId: string | number) =>
+    api.get<{ success: boolean; data: ReadingPayload }>(
+      `/documents/${documentId}/reading`,
+      { headers: { "Cache-Control": "no-store" } }
+    ),
+
+  putProgress: (documentId: string | number, lastPage: number) =>
+    api.put<{ success: boolean; data: ReadingProgressRecord }>(
+      `/documents/${documentId}/progress`,
+      { lastPage }
+    ),
+
+  createNote: (
+    documentId: string | number,
+    data: { page?: number | null; content: string }
+  ) =>
+    api.post<{ success: boolean; data: NoteRecord }>(
+      `/documents/${documentId}/notes`,
+      data
+    ),
+
+  updateNote: (
+    documentId: string | number,
+    noteId: number,
+    data: { content?: string; page?: number | null }
+  ) =>
+    api.patch<{ success: boolean; data: NoteRecord }>(
+      `/documents/${documentId}/notes/${noteId}`,
+      data
+    ),
+
+  deleteNote: (documentId: string | number, noteId: number) =>
+    api.delete<{ success: boolean; data: NoteRecord }>(
+      `/documents/${documentId}/notes/${noteId}`
+    ),
+
+  createHighlight: (
+    documentId: string | number,
+    data: { page: number; color: "RED" | "YELLOW"; text: string; rects: any }
+  ) =>
+    api.post<{ success: boolean; data: HighlightRecord }>(
+      `/documents/${documentId}/highlights`,
+      data
+    ),
+
+  updateHighlight: (
+    documentId: string | number,
+    highlightId: number,
+    color: "RED" | "YELLOW"
+  ) =>
+    api.patch<{ success: boolean; data: HighlightRecord }>(
+      `/documents/${documentId}/highlights/${highlightId}`,
+      { color }
+    ),
+
+  deleteHighlight: (documentId: string | number, highlightId: number) =>
+    api.delete<{ success: boolean; data: HighlightRecord }>(
+      `/documents/${documentId}/highlights/${highlightId}`
+    ),
+
+  deleteHighlights: (documentId: string | number, ids: number[]) =>
+    api.delete<{ success: boolean; data: { count: number } }>(
+      `/documents/${documentId}/highlights`,
+      { data: { ids } }
+    ),
+
+  getRecent: () =>
+    api.get<{ success: boolean; data: RecentDocumentItem[] }>(
+      "/reading/recent"
+    ),
+
+  getBookmarks: () =>
+    api.get<{ success: boolean; data: BookmarkDocumentItem[] }>(
+      "/reading/bookmarks"
+    ),
+
+  getNotes: () =>
+    api.get<{ success: boolean; data: DocumentWithNotes[] }>(
+      "/reading/notes"
     ),
 };
 
