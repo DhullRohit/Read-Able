@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect } from "react";
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, Link } from "@tanstack/react-router";
 import PDFReader from "@/components/PDFReader";
 import {
   resolveDocumentSource,
@@ -129,12 +129,12 @@ function ReaderPage() {
         <div style={{ fontSize: "0.875rem", color: "#888" }}>
           The document <code>"{id}"</code> does not exist.
         </div>
-        <a
-          href="/dashboard"
+        <Link
+          to="/dashboard"
           style={{ color: "#6c63ff", fontSize: "0.875rem", marginTop: 4 }}
         >
           Back to Dashboard
-        </a>
+        </Link>
       </div>
     );
   }
@@ -159,12 +159,12 @@ function ReaderPage() {
         <div style={{ fontSize: "0.875rem", color: "#888" }}>
           {state.message}
         </div>
-        <a
-          href="/dashboard"
+        <Link
+          to="/dashboard"
           style={{ color: "#6c63ff", fontSize: "0.875rem", marginTop: 4 }}
         >
           Back to Dashboard
-        </a>
+        </Link>
       </div>
     );
   }

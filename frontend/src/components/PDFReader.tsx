@@ -1,22 +1,13 @@
 /**
  * PDFReader.tsx
  *
- * Core Document Reading Experience — Phase 3
- *
- * Implements an accessible, high-performance reader supporting:
- *  - Dual View Modes:
- *      1. Accessible Text Mode: Structured, page-by-page paragraph text extracted
- *         by Phase 2 with dyslexia-friendly fonts, font sizing, and line spacing.
- *      2. Original PDF Mode: High-fidelity PDF rendering via react-pdf.
- *  - Page Navigation: Previous / Next, page jump input, keyboard shortcuts (← →).
- *  - Reading Progress & Resume: Auto-restores last reading position without page-1 flash.
- *    Debounced auto-save on page turn and instant save on tab hide.
- *  - Reading Preferences: Light, Dark, and Sepia contrast themes; OpenDyslexic / Lexend / Inter fonts;
- *    comfortable line/letter spacing; zoom controls.
- *  - Loading, error, and empty-page states.
+ * Core Document Reading Experience with Phase 3 Reading Features:
+ * 1. Bookmark autosave (debounced ~1s, keepalive on unmount/hide, Go to page input).
+ * 2. Highlights (floating red/yellow toolbar on selection, persistent render, color change & delete).
+ * 3. Notes panel (autosave debounced ~800ms, status indicators, flush on blur/exit).
  */
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -31,14 +22,25 @@ import {
   type ReaderFont,
   type ReaderViewMode,
 } from "@/lib/readerSettings";
-import {
-  getProgress,
-  saveProgress,
-  type ReadingProgress,
-} from "@/lib/readerProgress";
+import { useReadingSession } from "@/lib/useReadingSession";
+import { documentApi, type HighlightRecord } from "@/lib/api";
 
 // Setup pdf.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+
+function getCharacterOffset(container: Node, targetNode: Node, targetOffset: number): number {
+  let charCount = 0;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode === targetNode) {
+      return charCount + targetOffset;
+    }
+    charCount += currentNode.nodeValue ? currentNode.nodeValue.length : 0;
+    currentNode = walker.nextNode();
+  }
+  return charCount;
+}
 
 interface PDFReaderProps {
   source: DocumentReaderSource;
@@ -58,7 +60,7 @@ export default function PDFReader({ source }: PDFReaderProps) {
   const extractedPages = source.extractedPages || [];
   const hasExtractedText = extractedPages.length > 0;
 
-  // If no extracted text is available, fall back to PDF view mode
+  // View Mode: fall back to PDF view mode if no extracted text
   const activeViewMode: ReaderViewMode =
     settings.viewMode === "text" && !hasExtractedText ? "pdf" : settings.viewMode;
 
@@ -66,121 +68,95 @@ export default function PDFReader({ source }: PDFReaderProps) {
   const totalPages = Math.max(
     1,
     activeViewMode === "pdf"
-      ? (numPdfPages || source.totalPages || (hasExtractedText ? extractedPages.length : 1))
-      : (hasExtractedText ? extractedPages.length : (numPdfPages || source.totalPages || 1))
+      ? numPdfPages || source.totalPages || (hasExtractedText ? extractedPages.length : 1)
+      : hasExtractedText ? extractedPages.length : numPdfPages || source.totalPages || 1
   );
 
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageInput, setPageInput] = useState<string>("1");
-  const [progressRestored, setProgressRestored] = useState(false);
+  // Reading Session Hook (Features 1, 2, 3)
+  const {
+    currentPage,
+    pageInput,
+    setPageInput,
+    goToPage,
+    nextPage,
+    prevPage,
+    highlightMode,
+    setHighlightMode,
+    highlights,
+    saveHighlightDirect,
+    updateHighlightColor,
+    deleteHighlight,
+    deleteHighlightsBatch,
+    cancelAutosaves,
+    activeHighlightPopup,
+    setActiveHighlightPopup,
+    notes,
+    notesPanelOpen,
+    setNotesPanelOpen,
+    addDraftNote,
+    updateNoteContent,
+    deleteNote,
+    flushNote,
+  } = useReadingSession(source.documentId, totalPages);
 
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(true);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
-  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ref to the page container
+  const pageContainerRef = useRef<HTMLDivElement | null>(null);
+  // Ref to the text container for calculating text offsets
+  const textContainerRef = useRef<HTMLDivElement | null>(null);
+  // Ref to the scrollable main canvas for smooth page scrolling
+  const mainCanvasRef = useRef<HTMLElement | null>(null);
 
-  // ---------------------------------------------------------------------------
-  // 1. Restore previous reading position on mount (Resume)
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const saved = await getProgress(source.documentId);
-      if (!cancelled && saved && saved.currentPage > 1) {
-        setCurrentPage(saved.currentPage);
-        setPageInput(String(saved.currentPage));
+  // Highlight menu dropdown & Toast state
+  const [highlightMenuOpen, setHighlightMenuOpen] = useState(false);
+  const highlightMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const [toastMsg, setToastMsg] = useState<string>("");
+  const [toastVisible, setToastVisible] = useState<boolean>(false);
+  const toastTimerRef = useRef<any>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    setToastVisible(true);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastVisible(false), 2400);
+  }, []);
+
+  const handleDeleteHighlights = useCallback(
+    async (ids: number[]) => {
+      if (!ids || ids.length === 0) return;
+      try {
+        await deleteHighlightsBatch(ids);
+      } catch {
+        showToast("Failed to erase highlight. Please try again.");
       }
-      if (!cancelled) {
-        setProgressRestored(true);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [source.documentId]);
-
-  // ---------------------------------------------------------------------------
-  // 2. Save reading progress (debounced on page change + immediate on tab hide)
-  // ---------------------------------------------------------------------------
-  const doSaveProgress = useCallback(
-    (page: number, total: number) => {
-      if (total <= 0) return;
-      const progress: ReadingProgress = {
-        documentId: source.documentId,
-        currentPage: page,
-        totalPages: total,
-        percentage: Math.min(100, Math.max(0, Math.round((page / total) * 100))),
-        lastReadAt: new Date().toISOString(),
-      };
-      saveProgress(progress);
     },
-    [source.documentId]
+    [deleteHighlightsBatch, showToast]
   );
 
-  useEffect(() => {
-    if (!progressRestored || totalPages <= 0) return;
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingDoc, setDeletingDoc] = useState(false);
 
-    if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
-    saveDebounceRef.current = setTimeout(() => {
-      doSaveProgress(currentPage, totalPages);
-    }, 500);
-
-    return () => {
-      if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
-    };
-  }, [currentPage, totalPages, progressRestored, doSaveProgress]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden" && totalPages > 0) {
-        doSaveProgress(currentPage, totalPages);
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [currentPage, totalPages, doSaveProgress]);
-
-  // ---------------------------------------------------------------------------
-  // 3. Navigation Controls
-  // ---------------------------------------------------------------------------
-  const goTo = useCallback(
-    (page: number) => {
-      const target = Math.max(1, Math.min(page, totalPages));
-      setCurrentPage(target);
-      setPageInput(String(target));
-    },
-    [totalPages]
-  );
-
-  const nextPage = useCallback(() => {
-    setCurrentPage((prev) => {
-      const next = Math.max(1, Math.min(prev + 1, totalPages));
-      setPageInput(String(next));
-      return next;
-    });
-  }, [totalPages]);
-
-  const prevPage = useCallback(() => {
-    setCurrentPage((prev) => {
-      const prevVal = Math.max(1, Math.min(prev - 1, totalPages));
-      setPageInput(String(prevVal));
-      return prevVal;
-    });
-  }, [totalPages]);
-
-  const handlePageInputSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const val = parseInt(pageInput, 10);
-    if (!isNaN(val)) {
-      goTo(val);
-    } else {
-      setPageInput(String(currentPage));
+  const handleDeleteCurrentDocument = async () => {
+    setDeletingDoc(true);
+    // Cancel pending autosave timers and in-flight saves (Requirement 3)
+    cancelAutosaves();
+    try {
+      await documentApi.delete(Number(source.documentId));
+      navigate({ to: "/dashboard" });
+    } catch {
+      showToast("Failed to delete document");
+      setDeletingDoc(false);
+      setDeleteDialogOpen(false);
     }
   };
 
+  // ---------------------------------------------------------------------------
   // Keyboard navigation (ArrowLeft / ArrowRight)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -205,7 +181,7 @@ export default function PDFReader({ source }: PDFReaderProps) {
   }, [nextPage, prevPage]);
 
   // ---------------------------------------------------------------------------
-  // 4. Preferences management
+  // Preferences management
   // ---------------------------------------------------------------------------
   const updateSettings = (patch: Partial<ReaderSettings>) => {
     setSettings((prev) => {
@@ -226,12 +202,18 @@ export default function PDFReader({ source }: PDFReaderProps) {
 
   const changeZoom = (delta: number) => {
     const currentIdx = ZOOM_STEPS.indexOf(settings.zoom);
-    const nextIdx = Math.max(0, Math.min(ZOOM_STEPS.length - 1, (currentIdx === -1 ? DEFAULT_ZOOM_IDX : currentIdx) + delta));
+    const nextIdx = Math.max(
+      0,
+      Math.min(
+        ZOOM_STEPS.length - 1,
+        (currentIdx === -1 ? DEFAULT_ZOOM_IDX : currentIdx) + delta
+      )
+    );
     updateSettings({ zoom: ZOOM_STEPS[nextIdx] });
   };
 
   // ---------------------------------------------------------------------------
-  // 5. Visual Styling Theme Tokens
+  // Visual Theme Tokens
   // ---------------------------------------------------------------------------
   const themeColors = {
     light: {
@@ -248,117 +230,249 @@ export default function PDFReader({ source }: PDFReaderProps) {
       btnBg: "#F0EDE6",
     },
     sepia: {
-      bg: "#FBF3DD",
-      toolbar: "#F6ECCE",
-      border: "#E8DCBA",
-      text: "#332B1E",
-      textMuted: "#7A6F5A",
-      card: "#FBF3DD",
-      cardBorder: "#EADCB6",
-      accent: "#8A5A2B",
-      accentHover: "#704820",
-      accentTint: "rgba(138,90,43,0.1)",
-      btnBg: "#EFE2BE",
+      bg: "#F4ECD8",
+      toolbar: "#EDE4CE",
+      border: "#D8CDAF",
+      text: "#382D1D",
+      textMuted: "#7C6C53",
+      card: "#FAF4E6",
+      cardBorder: "#D8CDAF",
+      accent: "#8C5823",
+      accentHover: "#73461A",
+      accentTint: "rgba(140,88,35,0.08)",
+      btnBg: "#E3DAC0",
     },
     dark: {
-      bg: "#0E1815",
-      toolbar: "#152420",
-      border: "#233530",
-      text: "#EAF7F1",
-      textMuted: "#8DA39C",
-      card: "#152420",
-      cardBorder: "#273D37",
-      accent: "#3DD9AE",
-      accentHover: "#32B894",
-      accentTint: "rgba(61,217,174,0.12)",
-      btnBg: "#1F352F",
+      bg: "#121413",
+      toolbar: "#1B1E1C",
+      border: "#292E2B",
+      text: "#EDF2EF",
+      textMuted: "#88948E",
+      card: "#181B19",
+      cardBorder: "#292E2B",
+      accent: "#38A894",
+      accentHover: "#45C4AD",
+      accentTint: "rgba(56,168,148,0.14)",
+      btnBg: "#232825",
     },
   }[settings.theme];
 
   const fontFamilies: Record<ReaderFont, string> = {
-    OpenDyslexic: "'OpenDyslexic', 'Comic Sans MS', 'Lexend', sans-serif",
-    Lexend: "'Lexend', -apple-system, sans-serif",
-    Inter: "'Inter', system-ui, sans-serif",
-    System: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    OpenDyslexic: "'OpenDyslexic', sans-serif",
+    Lexend: "'Lexend', sans-serif",
+    Inter: "'Inter', sans-serif",
+    System: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   };
 
-  const progressPercentage =
-    totalPages > 0 ? Math.min(100, Math.max(0, Math.round((currentPage / totalPages) * 100))) : 0;
+  const progressPercentage = Math.min(
+    100,
+    Math.max(0, Math.round((currentPage / totalPages) * 100))
+  );
 
-  // Current page text from Phase 2 extracted pages
   const currentPageContent =
-    hasExtractedText && currentPage <= extractedPages.length
-      ? extractedPages[currentPage - 1]
-      : null;
+    extractedPages.find((p) => p.pageNumber === currentPage) ||
+    extractedPages[currentPage - 1];
+
+  const pageText = currentPageContent?.text || "";
+
+  // Valid highlights for active page (Item 2: skip non-matching text or old rects form)
+  const validPageHighlights = useMemo(() => {
+    if (!pageText) return [];
+    return highlights.filter((hl) => {
+      if (hl.page !== currentPage) return false;
+      if (!hl.rects || typeof hl.rects !== "object") return false;
+      const { start, end } = hl.rects as { start?: number; end?: number };
+      if (typeof start !== "number" || typeof end !== "number") return false;
+      if (start < 0 || end <= start || end > pageText.length) return false;
+      return pageText.slice(start, end) === hl.text;
+    });
+  }, [highlights, currentPage, pageText]);
+
+  interface TextSegment {
+    key: string;
+    text: string;
+    start: number;
+    end: number;
+    highlights: HighlightRecord[];
+  }
+
+  const textSegments = useMemo<TextSegment[]>(() => {
+    if (!pageText) return [];
+    if (validPageHighlights.length === 0) {
+      return [{ key: "seg-0", text: pageText, start: 0, end: pageText.length, highlights: [] }];
+    }
+
+    const boundariesSet = new Set<number>([0, pageText.length]);
+    for (const hl of validPageHighlights) {
+      const { start, end } = hl.rects as { start: number; end: number };
+      boundariesSet.add(start);
+      boundariesSet.add(end);
+    }
+    const boundaries = Array.from(boundariesSet).sort((a, b) => a - b);
+
+    const segments: TextSegment[] = [];
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const start = boundaries[i];
+      const end = boundaries[i + 1];
+      if (start >= end) continue;
+
+      const segText = pageText.slice(start, end);
+      const covering = validPageHighlights.filter((hl) => {
+        const { start: hStart, end: hEnd } = hl.rects as { start: number; end: number };
+        return hStart <= start && hEnd >= end;
+      });
+
+      segments.push({
+        key: `seg-${start}-${end}`,
+        text: segText,
+        start,
+        end,
+        highlights: covering,
+      });
+    }
+
+    return segments;
+  }, [pageText, validPageHighlights]);
 
   // ---------------------------------------------------------------------------
-  // 6. Loading screen before position is restored (prevents page 1 flash)
+  // Text Selection detection: only active in Text View (Requirement 1 & 2)
   // ---------------------------------------------------------------------------
-  if (!progressRestored) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          background: themeColors.bg,
-          color: themeColors.text,
-          fontFamily: fontFamilies[settings.fontFamily],
-          gap: 16,
-        }}
-      >
-        <div
-          style={{
-            width: 40,
-            height: 40,
-            border: `3px solid ${themeColors.border}`,
-            borderTopColor: themeColors.accent,
-            borderRadius: "50%",
-            animation: "spin 0.8s linear infinite",
-          }}
-        />
-        <p style={{ fontSize: "0.9375rem", color: themeColors.textMuted }}>
-          Resuming reading position…
-        </p>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
-  }
+  const handleTextSelection = useCallback(() => {
+    if (activeViewMode !== "text") return;
+    if (highlightMode === "OFF") return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const container = textContainerRef.current;
+    if (!container) return;
+
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) {
+      return;
+    }
+
+    let rawStart = getCharacterOffset(container, range.startContainer, range.startOffset);
+    let rawEnd = getCharacterOffset(container, range.endContainer, range.endOffset);
+    if (rawStart > rawEnd) {
+      const tmp = rawStart;
+      rawStart = rawEnd;
+      rawEnd = tmp;
+    }
+
+    // Trim whitespace to ensure clean offset range matching text
+    let start = rawStart;
+    let end = rawEnd;
+    while (start < end && /\s/.test(pageText[start])) {
+      start++;
+    }
+    while (end > start && /\s/.test(pageText[end - 1])) {
+      end--;
+    }
+
+    if (start >= end) return;
+    const selectedText = pageText.slice(start, end);
+    if (!selectedText.trim()) return;
+
+    if (highlightMode === "ERASE") {
+      // Erase active: selecting text removes every saved highlight that overlaps it
+      const overlapping = validPageHighlights.filter((hl) => {
+        const { start: hStart, end: hEnd } = hl.rects as { start: number; end: number };
+        return Math.max(hStart, start) < Math.min(hEnd, end);
+      });
+
+      if (overlapping.length > 0) {
+        const idsToDelete = overlapping.map((h) => h.id);
+        handleDeleteHighlights(idsToDelete);
+      }
+      selection.removeAllRanges();
+      return;
+    }
+
+    if (highlightMode === "RED" || highlightMode === "YELLOW") {
+      // Red or Yellow active: selecting text highlights it immediately and autosaves
+      saveHighlightDirect(highlightMode, {
+        text: selectedText,
+        rects: { start, end },
+        page: currentPage,
+      });
+      selection.removeAllRanges();
+    }
+  }, [
+    activeViewMode,
+    highlightMode,
+    pageText,
+    validPageHighlights,
+    currentPage,
+    saveHighlightDirect,
+    handleDeleteHighlights,
+  ]);
+
+  // Click outside listener for highlight menu & popup
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!highlightMenuRef.current?.contains(target)) {
+        setHighlightMenuOpen(false);
+      }
+      if (target?.closest(".highlight-popup")) {
+        return;
+      }
+      if (!target?.closest(".text-highlight-mark")) {
+        setActiveHighlightPopup(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [setActiveHighlightPopup]);
+
+  // Page input submission (Requirement 5)
+  const handlePageInputSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseInt(pageInput, 10);
+    if (!isNaN(val) && val >= 1) {
+      const target = Math.max(1, Math.min(val, totalPages));
+      goToPage(target);
+      mainCanvasRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      setPageInput(String(currentPage));
+    }
+  };
 
   return (
     <div
       style={{
-        minHeight: "100vh",
-        background: themeColors.bg,
-        color: themeColors.text,
         display: "flex",
         flexDirection: "column",
+        height: "100vh",
+        background: themeColors.bg,
+        color: themeColors.text,
         fontFamily: fontFamilies[settings.fontFamily],
-        transition: "background 0.2s, color 0.2s",
+        overflow: "hidden",
+        position: "relative",
       }}
+      onMouseUp={activeViewMode === "text" ? handleTextSelection : undefined}
+      onTouchEnd={activeViewMode === "text" ? handleTextSelection : undefined}
     >
       {/* -------------------------------------------------------------------- */}
-      {/* Header Toolbar                                                       */}
+      {/* Top Navigation & Toolbar                                             */}
       {/* -------------------------------------------------------------------- */}
       <header
         style={{
-          height: 60,
+          height: 56,
           background: themeColors.toolbar,
           borderBottom: `1px solid ${themeColors.border}`,
           padding: "0 16px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 12,
-          position: "sticky",
-          top: 0,
           zIndex: 30,
+          flexShrink: 0,
         }}
       >
-        {/* Left: Back & Title */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        {/* Left: Back & Document Title */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
           <button
             type="button"
             onClick={() => navigate({ to: "/dashboard" })}
@@ -368,13 +482,14 @@ export default function PDFReader({ source }: PDFReaderProps) {
               border: `1px solid ${themeColors.border}`,
               color: themeColors.text,
               borderRadius: 8,
-              padding: "6px 10px",
+              padding: "6px 12px",
               fontSize: "0.8125rem",
               fontWeight: 500,
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               gap: 6,
+              whiteSpace: "nowrap",
             }}
           >
             ← <span className="hidden sm:inline">Dashboard</span>
@@ -389,7 +504,7 @@ export default function PDFReader({ source }: PDFReaderProps) {
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                maxWidth: "260px",
+                maxWidth: "240px",
               }}
               title={source.title}
             >
@@ -398,7 +513,7 @@ export default function PDFReader({ source }: PDFReaderProps) {
           </div>
         </div>
 
-        {/* Center: Page Navigation Controls */}
+        {/* Center: Page Navigation & "Go to page" */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <button
             type="button"
@@ -422,23 +537,29 @@ export default function PDFReader({ source }: PDFReaderProps) {
 
           <form
             onSubmit={handlePageInputSubmit}
-            style={{ display: "flex", alignItems: "center", gap: 4 }}
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
           >
             <input
-              type="text"
-              inputMode="numeric"
+              type="number"
+              min={1}
+              max={totalPages}
               value={pageInput}
               onChange={(e) => setPageInput(e.target.value)}
-              onBlur={handlePageInputSubmit}
-              aria-label="Current Page Number"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handlePageInputSubmit(e);
+                }
+              }}
+              title="Go to page"
+              aria-label="Go to page"
               style={{
-                width: 44,
+                width: 52,
                 textAlign: "center",
                 background: themeColors.bg,
                 color: themeColors.text,
                 border: `1px solid ${themeColors.border}`,
                 borderRadius: 6,
-                padding: "4px 0",
+                padding: "4px 2px",
                 fontSize: "0.875rem",
                 fontWeight: 600,
                 outline: "none",
@@ -447,6 +568,21 @@ export default function PDFReader({ source }: PDFReaderProps) {
             <span style={{ fontSize: "0.8125rem", color: themeColors.textMuted }}>
               / {totalPages}
             </span>
+            <button
+              type="submit"
+              style={{
+                background: themeColors.btnBg,
+                border: `1px solid ${themeColors.border}`,
+                color: themeColors.text,
+                borderRadius: 6,
+                padding: "4px 8px",
+                fontSize: "0.75rem",
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Go
+            </button>
           </form>
 
           <button
@@ -470,8 +606,248 @@ export default function PDFReader({ source }: PDFReaderProps) {
           </button>
         </div>
 
-        {/* Right: View Mode Toggle & Preferences */}
+        {/* Right: Notes Toggle, Highlight Toolbar, View Mode & Preferences */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+          {/* Notes Panel Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setNotesPanelOpen((v) => !v)}
+            title="Toggle Notes Panel"
+            style={{
+              background: notesPanelOpen ? themeColors.accentTint : themeColors.btnBg,
+              border: `1px solid ${notesPanelOpen ? themeColors.accent : themeColors.border}`,
+              color: notesPanelOpen ? themeColors.accent : themeColors.text,
+              borderRadius: 8,
+              padding: "6px 10px",
+              fontSize: "0.8125rem",
+              fontWeight: 500,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            📝 Notes
+            {notes.length > 0 && (
+              <span
+                style={{
+                  background: themeColors.accent,
+                  color: "#fff",
+                  borderRadius: "10px",
+                  padding: "1px 6px",
+                  fontSize: "0.6875rem",
+                  fontWeight: 700,
+                }}
+              >
+                {notes.length}
+              </span>
+            )}
+          </button>
+
+          {/* Highlight Dropdown Button (Requirement 1 & 2) */}
+          {activeViewMode === "pdf" ? (
+            <button
+              type="button"
+              disabled
+              title="Highlighting is available in Text view"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: themeColors.btnBg,
+                border: `1px solid ${themeColors.border}`,
+                color: themeColors.textMuted,
+                opacity: 0.5,
+                borderRadius: 8,
+                padding: "6px 10px",
+                fontSize: "0.8125rem",
+                fontWeight: 500,
+                cursor: "not-allowed",
+              }}
+            >
+              <span>🖍️</span>
+              <span>Highlight</span>
+            </button>
+          ) : (
+            <div style={{ position: "relative" }} ref={highlightMenuRef}>
+              <button
+                type="button"
+                onClick={() => setHighlightMenuOpen((v) => !v)}
+                title={
+                  highlightMode === "OFF"
+                    ? "Highlight: Off"
+                    : `Highlight: ${highlightMode} active`
+                }
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  background:
+                    highlightMode === "RED"
+                      ? "rgba(239, 68, 68, 0.15)"
+                      : highlightMode === "YELLOW"
+                      ? "rgba(234, 179, 8, 0.2)"
+                      : highlightMode === "ERASE"
+                      ? "rgba(100, 116, 139, 0.18)"
+                      : themeColors.btnBg,
+                  border: `1px solid ${
+                    highlightMode === "RED"
+                      ? "#ef4444"
+                      : highlightMode === "YELLOW"
+                      ? "#eab308"
+                      : highlightMode === "ERASE"
+                      ? "#64748b"
+                      : themeColors.border
+                  }`,
+                  color:
+                    highlightMode === "RED"
+                      ? "#dc2626"
+                      : highlightMode === "YELLOW"
+                      ? "#b45309"
+                      : highlightMode === "ERASE"
+                      ? themeColors.text
+                      : themeColors.text,
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  fontSize: "0.8125rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <span>🖍️</span>
+                <span>
+                  Highlight
+                  {highlightMode === "RED"
+                    ? " (Red)"
+                    : highlightMode === "YELLOW"
+                    ? " (Yellow)"
+                    : highlightMode === "ERASE"
+                    ? " (Erase)"
+                    : ""}
+                </span>
+                <span style={{ fontSize: "0.65rem", opacity: 0.7 }}>▼</span>
+              </button>
+
+              {highlightMenuOpen && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 40,
+                    right: 0,
+                    width: 140,
+                    background: themeColors.toolbar,
+                    border: `1px solid ${themeColors.border}`,
+                    borderRadius: 8,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                    padding: 4,
+                    zIndex: 50,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHighlightMode("RED");
+                      setHighlightMenuOpen(false);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background:
+                        highlightMode === "RED" ? "rgba(239, 68, 68, 0.15)" : "transparent",
+                      color: highlightMode === "RED" ? "#dc2626" : themeColors.text,
+                      fontWeight: highlightMode === "RED" ? 600 : 500,
+                      fontSize: "0.8125rem",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span>🔴</span> Red
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHighlightMode("YELLOW");
+                      setHighlightMenuOpen(false);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background:
+                        highlightMode === "YELLOW" ? "rgba(234, 179, 8, 0.2)" : "transparent",
+                      color: highlightMode === "YELLOW" ? "#b45309" : themeColors.text,
+                      fontWeight: highlightMode === "YELLOW" ? 600 : 500,
+                      fontSize: "0.8125rem",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span>🟡</span> Yellow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHighlightMode("ERASE");
+                      setHighlightMenuOpen(false);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background:
+                        highlightMode === "ERASE" ? "rgba(100, 116, 139, 0.18)" : "transparent",
+                      color: highlightMode === "ERASE" ? themeColors.text : themeColors.text,
+                      fontWeight: highlightMode === "ERASE" ? 600 : 500,
+                      fontSize: "0.8125rem",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span>🧹</span> Erase
+                  </button>
+                  <div style={{ height: 1, background: themeColors.border, margin: "2px 0" }} />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHighlightMode("OFF");
+                      setHighlightMenuOpen(false);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background:
+                        highlightMode === "OFF" ? themeColors.btnBg : "transparent",
+                      color: themeColors.textMuted,
+                      fontWeight: highlightMode === "OFF" ? 600 : 500,
+                      fontSize: "0.8125rem",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span>⚪</span> Off
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* View Mode Toggle: Accessible Text vs Original PDF */}
           {hasExtractedText && (
             <button
@@ -516,6 +892,39 @@ export default function PDFReader({ source }: PDFReaderProps) {
             }}
           >
             ⚙️ <span className="hidden sm:inline">Preferences</span>
+          </button>
+
+          {/* Delete Document Button (Requirement 3) */}
+          <button
+            type="button"
+            onClick={() => setDeleteDialogOpen(true)}
+            title="Delete this document"
+            style={{
+              background: "transparent",
+              border: `1px solid ${themeColors.border}`,
+              color: themeColors.textMuted,
+              borderRadius: 8,
+              padding: "6px 8px",
+              fontSize: "0.8125rem",
+              fontWeight: 500,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "#dc2626";
+              e.currentTarget.style.borderColor = "#dc2626";
+              e.currentTarget.style.background = "rgba(220, 38, 38, 0.08)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = themeColors.textMuted;
+              e.currentTarget.style.borderColor = themeColors.border;
+              e.currentTarget.style.background = "transparent";
+            }}
+          >
+            🗑️
           </button>
 
           {/* Preferences Dropdown Panel */}
@@ -593,7 +1002,7 @@ export default function PDFReader({ source }: PDFReaderProps) {
                 </div>
               </div>
 
-              {/* Font Sizing (for Text Mode) */}
+              {/* Font Sizing */}
               <div>
                 <label style={{ fontSize: "0.75rem", color: themeColors.textMuted, display: "block", marginBottom: 6 }}>
                   TEXT SIZE: {settings.fontSize}px
@@ -683,7 +1092,7 @@ export default function PDFReader({ source }: PDFReaderProps) {
                 />
               </label>
 
-              {/* PDF Zoom Controls (if viewing PDF) */}
+              {/* PDF Zoom Controls */}
               {activeViewMode === "pdf" && (
                 <div>
                   <label style={{ fontSize: "0.75rem", color: themeColors.textMuted, display: "block", marginBottom: 6 }}>
@@ -744,178 +1153,519 @@ export default function PDFReader({ source }: PDFReaderProps) {
         </div>
       </header>
 
+
       {/* -------------------------------------------------------------------- */}
-      {/* Main Reading Canvas                                                  */}
+      {/* Existing Highlight Action Popup (Color change / Delete)             */}
       {/* -------------------------------------------------------------------- */}
-      <main
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "24px 16px 80px",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "flex-start",
-        }}
-      >
-        {/* VIEW MODE 1: Accessible Structured Text View (Phase 2 output) */}
-        {activeViewMode === "text" && (
-          <article
+      {activeHighlightPopup && (
+        <div
+          className="highlight-popup"
+          style={{
+            position: "fixed",
+            top: activeHighlightPopup.y,
+            left: activeHighlightPopup.x,
+            transform: "translate(-50%, -100%)",
+            background: themeColors.toolbar,
+            border: `1px solid ${themeColors.border}`,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.22)",
+            borderRadius: 8,
+            padding: "6px 8px",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            zIndex: 60,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() =>
+              updateHighlightColor(
+                activeHighlightPopup.highlight.id,
+                activeHighlightPopup.highlight.color === "RED" ? "YELLOW" : "RED"
+              )
+            }
             style={{
-              width: "100%",
-              maxWidth: "760px",
-              background: themeColors.card,
-              border: `1px solid ${themeColors.cardBorder}`,
-              borderRadius: "14px",
-              padding: "40px 36px",
-              boxShadow: "0 4px 20px rgba(0,0,0,0.04)",
-              fontSize: `${settings.fontSize}px`,
-              lineHeight: settings.comfortableSpacing ? 1.85 : 1.5,
-              letterSpacing: settings.comfortableSpacing ? "0.02em" : "normal",
+              background: themeColors.btnBg,
+              border: `1px solid ${themeColors.border}`,
+              borderRadius: 6,
+              padding: "4px 8px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+              color: themeColors.text,
+              fontWeight: 600,
             }}
           >
-            {/* Page Header */}
-            <div
+            Switch to {activeHighlightPopup.highlight.color === "RED" ? "🟡 Yellow" : "🔴 Red"}
+          </button>
+          <button
+            type="button"
+            onClick={() => deleteHighlight(activeHighlightPopup.highlight.id)}
+            style={{
+              background: "rgba(239, 68, 68, 0.1)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              color: "#dc2626",
+              borderRadius: 6,
+              padding: "4px 8px",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+              fontWeight: 600,
+            }}
+          >
+            🗑️ Delete
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveHighlightPopup(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: themeColors.textMuted,
+              cursor: "pointer",
+              fontSize: "0.875rem",
+              padding: "0 4px",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------------- */}
+      {/* Main Content Area (Reading Canvas + Slide-in Notes Panel)           */}
+      {/* -------------------------------------------------------------------- */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+        {/* Main Canvas */}
+        <main
+          ref={mainCanvasRef}
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "24px 16px 80px",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "flex-start",
+          }}
+        >
+          {/* VIEW MODE 1: Accessible Structured Text View */}
+          {activeViewMode === "text" && (
+            <article
+              ref={pageContainerRef}
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                borderBottom: `1px solid ${themeColors.border}`,
-                paddingBottom: "12px",
-                marginBottom: "24px",
-                fontSize: "0.8125rem",
-                color: themeColors.textMuted,
+                position: "relative",
+                width: "100%",
+                maxWidth: "760px",
+                background: themeColors.card,
+                border: `1px solid ${themeColors.cardBorder}`,
+                borderRadius: "14px",
+                padding: "40px 36px",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.04)",
+                fontSize: `${settings.fontSize}px`,
+                lineHeight: settings.comfortableSpacing ? 1.85 : 1.5,
+                letterSpacing: settings.comfortableSpacing ? "0.02em" : "normal",
+                userSelect: "text",
               }}
             >
-              <span>Page {currentPage} of {totalPages}</span>
-              <span>{source.title}</span>
-            </div>
-
-            {/* Content Display */}
-            {currentPageContent && currentPageContent.text ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: settings.comfortableSpacing ? "20px" : "14px" }}>
-                {currentPageContent.paragraphs && currentPageContent.paragraphs.length > 0 ? (
-                  currentPageContent.paragraphs.map((p, idx) => (
-                    <p
-                      key={idx}
-                      style={{
-                        margin: 0,
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {p}
-                    </p>
-                  ))
-                ) : (
-                  <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                    {currentPageContent.text}
-                  </p>
-                )}
-              </div>
-            ) : (
-              /* Empty page state */
+              {/* Page Header */}
               <div
                 style={{
-                  padding: "48px 16px",
-                  textAlign: "center",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  borderBottom: `1px solid ${themeColors.border}`,
+                  paddingBottom: "12px",
+                  marginBottom: "24px",
+                  fontSize: "0.8125rem",
                   color: themeColors.textMuted,
                 }}
               >
-                <div style={{ fontSize: "2rem", marginBottom: 12 }}>🖼️</div>
-                <h3 style={{ fontSize: "1rem", fontWeight: 600, color: themeColors.text, margin: "0 0 6px" }}>
-                  No extractable text on page {currentPage}
-                </h3>
-                <p style={{ fontSize: "0.875rem", margin: "0 0 16px" }}>
-                  This page may be an image, scan, or blank page.
-                </p>
+                <span>Page {currentPage} of {totalPages}</span>
+                <span>{source.title}</span>
+              </div>
+
+              {/* Content Display: Rendered with character-offset inline highlights (Requirement 1 & 2) */}
+              {currentPageContent && pageText ? (
+                <div
+                  ref={textContainerRef}
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    userSelect: "text",
+                  }}
+                >
+                  {textSegments.map((seg) => {
+                    if (seg.highlights.length === 0) {
+                      return <span key={seg.key}>{seg.text}</span>;
+                    }
+
+                    const activeHl = seg.highlights[seg.highlights.length - 1];
+                    const isRed = activeHl.color === "RED";
+
+                    return (
+                      <mark
+                        key={seg.key}
+                        className="text-highlight-mark"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (highlightMode === "ERASE") {
+                            // Erase active: clicking a highlighted passage removes every saved highlight that overlaps it
+                            const idsToDelete = seg.highlights.map((h) => h.id);
+                            handleDeleteHighlights(idsToDelete);
+                          } else {
+                            // Red/Yellow active or Off: clicking an existing highlight still lets user change color or remove
+                            setActiveHighlightPopup({
+                              highlight: activeHl,
+                              x: e.clientX,
+                              y: e.clientY - 30,
+                            });
+                          }
+                        }}
+                        title={
+                          highlightMode === "ERASE"
+                            ? "Click to erase highlight"
+                            : `Highlight (${activeHl.color}): "${activeHl.text}"`
+                        }
+                        style={{
+                          background: isRed
+                            ? "rgba(239, 68, 68, 0.35)"
+                            : "rgba(250, 204, 21, 0.45)",
+                          color: "inherit",
+                          borderRadius: 2,
+                          padding: "1px 0",
+                          cursor: "pointer",
+                          mixBlendMode: "multiply",
+                          textDecoration: highlightMode === "ERASE" ? "line-through" : "none",
+                        }}
+                      >
+                        {seg.text}
+                      </mark>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* Empty page state */
+                <div
+                  style={{
+                    padding: "48px 16px",
+                    textAlign: "center",
+                    color: themeColors.textMuted,
+                  }}
+                >
+                  <div style={{ fontSize: "2rem", marginBottom: 12 }}>🖼️</div>
+                  <h3 style={{ fontSize: "1rem", fontWeight: 600, color: themeColors.text, margin: "0 0 6px" }}>
+                    No extractable text on page {currentPage}
+                  </h3>
+                  <p style={{ fontSize: "0.875rem", margin: "0 0 16px" }}>
+                    This page may be an image, scan, or blank page.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleViewModeToggle}
+                    style={{
+                      background: themeColors.accent,
+                      color: "#fff",
+                      border: "none",
+                      padding: "8px 16px",
+                      borderRadius: 8,
+                      fontSize: "0.8125rem",
+                      fontWeight: 500,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Switch to Original PDF View
+                  </button>
+                </div>
+              )}
+            </article>
+          )}
+
+          {/* VIEW MODE 2: Original PDF Canvas View */}
+          {activeViewMode === "pdf" && (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                width: "100%",
+              }}
+            >
+              {pdfError && (
+                <div
+                  style={{
+                    padding: "24px",
+                    textAlign: "center",
+                    color: "#d64545",
+                    background: themeColors.card,
+                    borderRadius: 10,
+                    border: `1px solid ${themeColors.border}`,
+                    maxWidth: 420,
+                  }}
+                >
+                  <p style={{ fontWeight: 600, margin: "0 0 8px" }}>Could not load PDF view</p>
+                  <p style={{ fontSize: "0.8125rem", color: themeColors.textMuted, margin: 0 }}>
+                    {pdfError}
+                  </p>
+                </div>
+              )}
+
+              {pdfLoading && !pdfError && (
+                <div style={{ padding: 40, textAlign: "center", color: themeColors.textMuted }}>
+                  Loading PDF…
+                </div>
+              )}
+
+              <div
+                ref={pageContainerRef}
+                style={{
+                  position: "relative",
+                  boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
+                  borderRadius: 6,
+                  overflow: "hidden",
+                  maxWidth: "100%",
+                }}
+              >
+                <Document
+                  file={source.pdfSource}
+                  onLoadSuccess={({ numPages }) => {
+                    setNumPdfPages(numPages);
+                    setPdfLoading(false);
+                  }}
+                  onLoadError={(err) => {
+                    setPdfError(err.message);
+                    setPdfLoading(false);
+                  }}
+                  loading={null}
+                >
+                  <Page
+                    key={`pdf_page_${currentPage}`}
+                    pageNumber={currentPage}
+                    scale={settings.zoom / 100}
+                    renderTextLayer={true}
+                    renderAnnotationLayer={true}
+                  />
+                </Document>
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Slide-out Notes Panel                                              */}
+        {/* ------------------------------------------------------------------ */}
+        {notesPanelOpen && (
+          <aside
+            style={{
+              width: 320,
+              background: themeColors.toolbar,
+              borderLeft: `1px solid ${themeColors.border}`,
+              display: "flex",
+              flexDirection: "column",
+              flexShrink: 0,
+              zIndex: 28,
+              boxShadow: "-4px 0 16px rgba(0,0,0,0.06)",
+            }}
+          >
+            {/* Notes Panel Header */}
+            <div
+              style={{
+                padding: "14px 16px",
+                borderBottom: `1px solid ${themeColors.border}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: "0.9375rem" }}>Notes</span>
+                <span
+                  style={{
+                    background: themeColors.accentTint,
+                    color: themeColors.accent,
+                    fontSize: "0.75rem",
+                    fontWeight: 700,
+                    padding: "2px 8px",
+                    borderRadius: 12,
+                  }}
+                >
+                  {notes.length}
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <button
                   type="button"
-                  onClick={handleViewModeToggle}
+                  onClick={addDraftNote}
                   style={{
                     background: themeColors.accent,
                     color: "#fff",
                     border: "none",
-                    padding: "8px 16px",
-                    borderRadius: 8,
-                    fontSize: "0.8125rem",
-                    fontWeight: 500,
+                    borderRadius: 6,
+                    padding: "5px 10px",
+                    fontSize: "0.75rem",
+                    fontWeight: 600,
                     cursor: "pointer",
                   }}
                 >
-                  Switch to Original PDF View
+                  + Add Note
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNotesPanelOpen(false)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    fontSize: "1rem",
+                    color: themeColors.textMuted,
+                    cursor: "pointer",
+                    padding: 4,
+                  }}
+                >
+                  ✕
                 </button>
               </div>
-            )}
-          </article>
-        )}
+            </div>
 
-        {/* VIEW MODE 2: Original PDF Canvas View (Phase 1 PDF Stream) */}
-        {activeViewMode === "pdf" && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              width: "100%",
-            }}
-          >
-            {pdfError && (
-              <div
-                style={{
-                  padding: "24px",
-                  textAlign: "center",
-                  color: "#d64545",
-                  background: themeColors.card,
-                  borderRadius: 10,
-                  border: `1px solid ${themeColors.border}`,
-                  maxWidth: 420,
-                }}
-              >
-                <p style={{ fontWeight: 600, margin: "0 0 8px" }}>Could not load PDF view</p>
-                <p style={{ fontSize: "0.8125rem", color: themeColors.textMuted, margin: 0 }}>
-                  {pdfError}
-                </p>
-              </div>
-            )}
-
-            {pdfLoading && !pdfError && (
-              <div style={{ padding: 40, textAlign: "center", color: themeColors.textMuted }}>
-                Loading PDF…
-              </div>
-            )}
-
+            {/* Notes List */}
             <div
               style={{
-                boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
-                borderRadius: 6,
-                overflow: "hidden",
-                maxWidth: "100%",
+                flex: 1,
+                overflowY: "auto",
+                padding: 16,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
               }}
             >
-              <Document
-                file={source.pdfSource}
-                onLoadSuccess={({ numPages }) => {
-                  setNumPdfPages(numPages);
-                  setPdfLoading(false);
-                }}
-                onLoadError={(err) => {
-                  setPdfError(err.message);
-                  setPdfLoading(false);
-                }}
-                loading={null}
-              >
-                <Page
-                  key={`pdf_page_${currentPage}`}
-                  pageNumber={currentPage}
-                  scale={settings.zoom / 100}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                />
-              </Document>
+              {notes.length === 0 ? (
+                <div
+                  style={{
+                    padding: "48px 12px",
+                    textAlign: "center",
+                    color: themeColors.textMuted,
+                  }}
+                >
+                  <div style={{ fontSize: "2rem", marginBottom: 8 }}>📝</div>
+                  <p style={{ fontSize: "0.875rem", margin: "0 0 12px" }}>
+                    No notes yet. Start typing to add one.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={addDraftNote}
+                    style={{
+                      background: themeColors.btnBg,
+                      border: `1px solid ${themeColors.border}`,
+                      color: themeColors.text,
+                      padding: "6px 14px",
+                      borderRadius: 8,
+                      fontSize: "0.8125rem",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    + Add first note
+                  </button>
+                </div>
+              ) : (
+                notes.map((note) => (
+                  <div
+                    key={note.id}
+                    style={{
+                      background: themeColors.card,
+                      border: `1px solid ${themeColors.border}`,
+                      borderRadius: 10,
+                      padding: 12,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        fontSize: "0.75rem",
+                        color: themeColors.textMuted,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => note.page && goToPage(note.page)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: themeColors.accent,
+                          fontWeight: 600,
+                          cursor: note.page ? "pointer" : "default",
+                          padding: 0,
+                          fontSize: "0.75rem",
+                        }}
+                      >
+                        {note.page ? `Page ${note.page}` : "General note"}
+                      </button>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {/* Note status indicator */}
+                        {note.saveStatus === "Saving..." && (
+                          <span style={{ color: "#d97706", fontSize: "0.6875rem" }}>
+                            Saving…
+                          </span>
+                        )}
+                        {note.saveStatus === "Saved" && (
+                          <span style={{ color: "#16a34a", fontSize: "0.6875rem" }}>
+                            Saved
+                          </span>
+                        )}
+                        {note.saveStatus === "Failed - retrying" && (
+                          <span style={{ color: "#dc2626", fontSize: "0.6875rem" }}>
+                            Failed - retrying
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => deleteNote(note.id)}
+                          title="Delete note"
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: themeColors.textMuted,
+                            cursor: "pointer",
+                            fontSize: "0.8125rem",
+                            padding: "0 2px",
+                          }}
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+
+                    <textarea
+                      value={note.content}
+                      onChange={(e) => updateNoteContent(note.id, e.target.value)}
+                      onBlur={() => flushNote(note.id)}
+                      placeholder="Write your note here…"
+                      rows={3}
+                      style={{
+                        width: "100%",
+                        background: themeColors.bg,
+                        color: themeColors.text,
+                        border: `1px solid ${themeColors.border}`,
+                        borderRadius: 6,
+                        padding: "8px",
+                        fontSize: "0.8125rem",
+                        lineHeight: 1.5,
+                        resize: "vertical",
+                        outline: "none",
+                        fontFamily: "inherit",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                  </div>
+                ))
+              )}
             </div>
-          </div>
+          </aside>
         )}
-      </main>
+      </div>
 
       {/* -------------------------------------------------------------------- */}
       {/* Bottom Progress Bar & Reader Status                                  */}
@@ -983,6 +1733,124 @@ export default function PDFReader({ source }: PDFReaderProps) {
           Page {currentPage} of {totalPages}
         </span>
       </footer>
+
+      {/* Delete Document Confirmation Dialog (Requirement 3) */}
+      {deleteDialogOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.55)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 110,
+            padding: 16,
+          }}
+          onClick={() => !deletingDoc && setDeleteDialogOpen(false)}
+        >
+          <div
+            style={{
+              background: themeColors.card,
+              border: `1px solid ${themeColors.cardBorder}`,
+              borderRadius: 14,
+              padding: "24px 28px",
+              maxWidth: 460,
+              width: "100%",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.3)",
+              color: themeColors.text,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              style={{
+                margin: "0 0 10px",
+                fontSize: "1.125rem",
+                fontWeight: 600,
+                color: themeColors.text,
+              }}
+            >
+              Delete '{source.title}'?
+            </h3>
+            <p
+              style={{
+                margin: "0 0 24px",
+                fontSize: "0.875rem",
+                color: themeColors.textMuted,
+                lineHeight: 1.5,
+              }}
+            >
+              This permanently removes the file, your bookmark, notes and highlights.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                type="button"
+                disabled={deletingDoc}
+                onClick={() => setDeleteDialogOpen(false)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: `1px solid ${themeColors.border}`,
+                  background: themeColors.btnBg,
+                  color: themeColors.text,
+                  fontSize: "0.875rem",
+                  fontWeight: 500,
+                  cursor: deletingDoc ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deletingDoc}
+                onClick={handleDeleteCurrentDocument}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#dc2626",
+                  color: "#fff",
+                  fontSize: "0.875rem",
+                  fontWeight: 600,
+                  cursor: deletingDoc ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {deletingDoc ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reader Toast Notification */}
+      {toastVisible && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 60,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "#18181b",
+            color: "#fafafa",
+            padding: "10px 18px",
+            borderRadius: 8,
+            fontSize: "0.8125rem",
+            fontWeight: 500,
+            boxShadow: "0 10px 25px rgba(0,0,0,0.25)",
+            zIndex: 100,
+            pointerEvents: "none",
+          }}
+        >
+          {toastMsg}
+        </div>
+      )}
     </div>
   );
 }
