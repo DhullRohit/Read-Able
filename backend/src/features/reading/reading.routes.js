@@ -1,30 +1,44 @@
 /**
  * reading.routes.js
  *
- * Express routes for reading progress endpoints.
- * Mounted at /api/reading in backend/src/routes/index.js.
+ * Aggregate reading endpoints mounted at /api/reading in backend/src/routes/index.js.
  */
 
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/auth.middleware.js";
 import {
-  getProgress,
+  getRecent,
+  getBookmarks,
+  getNotes,
+  getReading,
   saveProgress,
-  getUserProgressList,
 } from "./reading.controller.js";
+import documentReadingRoutes from "./reading.document.routes.js";
 
 const router = Router();
 
 // Protect all reading endpoints with JWT authentication
 router.use(authenticate);
 
-// GET /api/reading/progress
-router.get("/progress", getUserProgressList);
+// Aggregate endpoints
+router.get("/recent", getRecent);
+router.get("/bookmarks", getBookmarks);
+router.get("/notes", getNotes);
 
-// GET /api/reading/progress/:documentId
-router.get("/progress/:documentId", getProgress);
+// Compatibility / direct reading routes under /api/reading/:documentId/*
+router.get("/progress/:documentId", (req, res, next) => {
+  req.params.documentId = req.params.documentId;
+  return getReading(req, res, next);
+});
+router.post("/progress/:documentId", (req, res, next) => {
+  req.params.documentId = req.params.documentId;
+  return saveProgress(req, res, next);
+});
+router.put("/progress/:documentId", (req, res, next) => {
+  req.params.documentId = req.params.documentId;
+  return saveProgress(req, res, next);
+});
 
-// POST /api/reading/progress/:documentId
-router.post("/progress/:documentId", saveProgress);
+router.use("/:documentId", documentReadingRoutes);
 
 export default router;
