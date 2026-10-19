@@ -16,7 +16,10 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  documents    Document[]
+  documents       Document[]
+  readingProgress ReadingProgress[]
+  notes           Note[]
+  highlights      Highlight[]
 }
 
 enum DocumentStatus {
@@ -40,8 +43,17 @@ model Document {
 
   pages     DocumentPage[]
 
+  readingProgress ReadingProgress[]
+  notes           Note[]
+  highlights      Highlight[]
+
+  contentHash    String?
+  lastUploadedAt DateTime       @default(now())
+
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
+
+  @@index([userId, contentHash])
 }
 
 model DocumentPage {
@@ -57,4 +69,56 @@ model DocumentPage {
 
   @@unique([documentId, pageNumber])
   @@index([documentId])
+}
+
+enum HighlightColor {
+  RED
+  YELLOW
+}
+
+model ReadingProgress {
+  id         Int      @id @default(autoincrement())
+  lastPage   Int
+  updatedAt  DateTime @updatedAt
+
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  documentId Int
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId])
+}
+
+model Note {
+  id         Int      @id @default(autoincrement())
+  page       Int?
+  content    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  documentId Int
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([userId, documentId])
+}
+
+model Highlight {
+  id        Int            @id @default(autoincrement())
+  page      Int
+  color     HighlightColor
+  text      String
+  rects     Json
+  createdAt DateTime       @default(now())
+
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  documentId Int
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([userId, documentId])
 }
